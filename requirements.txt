@@ -1,0 +1,12 @@
+# python3 -m venv --system-site-packages .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -r requirements.txt
+numpy>=1.26
+scipy>=1.10
+opencv-python>=4.8
+PyYAML>=5.4
+pyproj>=3.5
+moderngl>=5.10
+glcontext>=3.0
+imgui-bundle>=1.92
+glfw>=2.7
+fonttools>=4.29
+matplotlib>=3.7

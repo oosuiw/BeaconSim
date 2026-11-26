@@ -1,0 +1,31 @@
+# 장대 터널 내부 사고 — 드리프트 누적
+# beacon_script: ROS 상위 제어기 대신 쓰는 자리표시 명령 (--ros 로 /cmd_vel 이 들어오면 그쪽 우선)
+# criteria 값은 예시입니다 (계획서 6장: 합격 기준 미정 → 실차 요구사항에서 역산해 수정)
+name: S04_tunnel_long
+description: 장대 터널 내부 사고 — 드리프트 누적
+duration: 150
+map:
+  seed: 7
+  length: 4000.0
+  tunnel_len_min: 1200.0
+  tunnel_len_max: 1500.0
+scenario:
+  seed: 104
+  accident_where: tunnel
+environment:
+  seed: 4
+  time_of_day: day
+  weather: clear
+topics:
+  localization: /localization/kinematic_state
+beacon_script:
+- t0: 5
+  t1: 80
+  v: 2.0
+  w: 0.0
+criteria:
+  max_beacon_hits: 0
+  beacon_not_damaged: true
+  min_ttc_s: 2.0
+  max_beacon_contacts: 0
+  max_loc_lat_tunnel_m: 0.3

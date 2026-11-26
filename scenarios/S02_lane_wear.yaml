@@ -1,0 +1,30 @@
+# 차선 마모·끊김 (불량 80%) — 차선검출 강건성 (--ros 로 검출 토픽 연결 시 평가)
+# beacon_script: ROS 상위 제어기 대신 쓰는 자리표시 명령 (--ros 로 /cmd_vel 이 들어오면 그쪽 우선)
+# criteria 값은 예시입니다 (계획서 6장: 합격 기준 미정 → 실차 요구사항에서 역산해 수정)
+name: S02_lane_wear
+description: 차선 마모·끊김 (불량 80%) — 차선검출 강건성 (--ros 로 검출 토픽 연결 시 평가)
+duration: 150
+map:
+  seed: 7
+  wear: 0.8
+scenario:
+  seed: 102
+  accident_where: open
+environment:
+  seed: 2
+  time_of_day: day
+  weather: clear
+topics:
+  lane_detection: /perception/lane/points
+beacon_script:
+- t0: 5
+  t1: 80
+  v: 2.0
+  w: 0.0
+criteria:
+  max_beacon_hits: 0
+  beacon_not_damaged: true
+  min_ttc_s: 2.0
+  max_beacon_contacts: 0
+  min_lane_precision: 0.9
+  min_lane_recall: 0.7

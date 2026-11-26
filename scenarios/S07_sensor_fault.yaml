@@ -1,0 +1,35 @@
+# 센서 고장·드롭 (Pandar 30~40 s, 레이더 50~55 s, GNSS 60~80 s)
+# beacon_script: ROS 상위 제어기 대신 쓰는 자리표시 명령 (--ros 로 /cmd_vel 이 들어오면 그쪽 우선)
+# criteria 값은 예시입니다 (계획서 6장: 합격 기준 미정 → 실차 요구사항에서 역산해 수정)
+name: S07_sensor_fault
+description: 센서 고장·드롭 (Pandar 30~40 s, 레이더 50~55 s, GNSS 60~80 s)
+duration: 150
+map:
+  seed: 7
+scenario:
+  seed: 107
+  accident_where: open
+environment:
+  seed: 7
+  time_of_day: day
+  weather: clear
+faults:
+- sensor: pandar40p
+  t0: 30
+  t1: 40
+- sensor: ars408
+  t0: 50
+  t1: 55
+- sensor: gnss
+  t0: 60
+  t1: 80
+beacon_script:
+- t0: 5
+  t1: 80
+  v: 2.0
+  w: 0.0
+criteria:
+  max_beacon_hits: 0
+  beacon_not_damaged: true
+  min_ttc_s: 2.0
+  max_beacon_contacts: 0

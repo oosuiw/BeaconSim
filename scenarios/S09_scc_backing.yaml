@@ -1,0 +1,33 @@
+# 비콘 전개 후 사고 현장 쪽으로 후진 — SCC가 비콘을 앞차로 인식하는지
+# beacon_script: ROS 상위 제어기 대신 쓰는 자리표시 명령 (--ros 로 /cmd_vel 이 들어오면 그쪽 우선)
+# criteria 값은 예시입니다 (계획서 6장: 합격 기준 미정 → 실차 요구사항에서 역산해 수정)
+name: S09_scc_backing
+description: 비콘 전개 후 사고 현장 쪽으로 후진 — SCC가 비콘을 앞차로 인식하는지
+duration: 150
+map:
+  seed: 7
+scenario:
+  seed: 109
+  accident_where: open
+traffic:
+  p_scc: 0.8
+  p_crash: 0.3
+environment:
+  seed: 9
+  time_of_day: day
+  weather: clear
+beacon_script:
+- t0: 5
+  t1: 65
+  v: 2.0
+  w: 0.0
+- t0: 65
+  t1: 140
+  v: -1.0
+  w: 0.0
+criteria:
+  max_beacon_hits: 0
+  beacon_not_damaged: true
+  min_ttc_s: 2.0
+  max_beacon_contacts: 0
+  min_scc_locks: 1

@@ -1,0 +1,25 @@
+# 기능 검증 모드: 접근 차량 없이 전개 → 차로 안에서 정지
+# beacon_script: ROS 상위 제어기 대신 쓰는 자리표시 명령 (--ros 로 /cmd_vel 이 들어오면 그쪽 우선)
+# criteria 값은 예시입니다 (계획서 6장: 합격 기준 미정 → 실차 요구사항에서 역산해 수정)
+name: S10_verify_no_traffic
+description: '기능 검증 모드: 접근 차량 없이 전개 → 차로 안에서 정지'
+duration: 100
+map:
+  seed: 7
+scenario:
+  seed: 110
+  accident_where: open
+traffic:
+  enabled: false
+environment:
+  seed: 10
+  time_of_day: day
+  weather: clear
+beacon_script:
+- t0: 5
+  t1: 60
+  v: 2.0
+  w: 0.0
+criteria:
+  beacon_not_damaged: true
+  max_beacon_contacts: 0

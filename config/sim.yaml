@@ -1,0 +1,146 @@
+# 비콘 시뮬레이터 런타임 설정. 센서 장착 포즈는 config/robot.yaml.
+# 토픽 이름은 실차와 맞출 때 여기만 바꾸면 된다.
+
+# 도로 맵 (roadgen.RoadParams). 같은 값이면 항상 같은 맵. GUI(beacon_app)에서 만든 map_meta.json의 params를 붙여넣어도 됨
+map:
+  seed: 7                 # -1 = 실행마다 랜덤 (결정값은 로그와 /sim/scenario 에)
+  length: 3000.0
+  lanes: 2
+  design_speed: 100
+  tunnels: 1
+  gantries: 2
+  wear: 0.3               # 차선 상태 나쁜 구간 비율 (희미함/끊김/희소)
+  wear_faded: 1.0
+  wear_broken: 1.0
+  wear_sparse: 1.0
+
+# 2차 사고 예방 시나리오 (traffic.ScenarioParams). 비콘은 사고 차량 후미에 역방향으로 '배치'만 되고,
+# 이동은 상위 제어기가 /cmd_vel 로 한다.
+scenario:
+  seed: -1                # -1 = 실행마다 랜덤
+  side: random            # random | down(하행) | up(상행)
+  lane: -1                # -1 랜덤, 0 = 1차로(중앙분리대 쪽)
+  accident_s: -1.0        # -1 랜덤
+  accident_vehicles: 2
+  accident_where: random  # random | open | tunnel_entry | tunnel | tunnel_exit
+  beacon_light: true      # 비콘 경광등 (야간 운전자 인지 거리에 영향)
+  start_gap: 6.0
+
+# 접근 차량 (traffic.TrafficParams). 반응 비율은 합으로 정규화
+traffic:
+  enabled: true           # false = 기능 검증 모드 (차량 없음)
+  flow: 900.0             # 비콘 쪽 차로당 [대/h]
+  flow_opposite: 600.0
+  speed_mean: 27.0        # [m/s]
+  speed_std: 3.0
+  truck_ratio: 0.2
+  p_lane_change: 0.6
+  p_brake: 0.3
+  p_crash: 0.1            # 무반응 → 비콘/사고 차량 추돌
+  notice_min: 60.0        # 비콘 인지 거리 [m]
+  notice_max: 250.0
+  max_vehicles: 200       # 슬롯 상한 (3~4차로·긴 맵이면 부족할 수 있음)
+  p_scc: 0.4              # SCC 작동 차량 비율. 정지한 비콘은 무시, 교통 흐름 방향으로 움직이면 앞차로 인식
+  scc_gap_min: 1.0        # 차간 시간 [s]
+  scc_gap_max: 2.5
+  scc_decel_min: 2.5      # SCC 최대 감속도 [m/s²]
+  scc_decel_max: 5.0
+  scc_range: 150.0
+  scc_moving_min: 0.5     # 비콘을 이동 물체로 인식하는 최소 속도 [m/s]
+
+# 실환경 (environment.EnvParams): random 이면 실행마다 랜덤, 지정도 가능
+environment:
+  seed: -1
+  time_of_day: random     # random | day | dusk | night
+  weather: random         # random | clear | rain | fog | snow
+  intensity: -1.0         # 날씨 강도 0~1, -1 랜덤
+  p_night: 0.3
+  p_dusk: 0.15
+  p_rain: 0.25
+  p_fog: 0.1
+  p_snow: 0.1
+
+# u-blox ZED-F9P 모델 (gnss.GnssParams)
+gnss:
+  enabled: true
+  topic: /sensing/gnss/fix
+  rate_hz: 10.0
+  depth_lost: 15.0        # 터널 입구에서 이만큼 들어가면 신호 단절 [m]
+  approach: 20.0          # 갱문 주변 SINGLE 구간 [m]
+  t_single_min: 1.0
+  t_single_max: 3.0
+  t_conv_min: 10.0        # FLOAT → FIX 재수렴 [s]
+  t_conv_max: 60.0
+
+sim:
+  step_hz: 100            # 코어 루프(시계, 기구학, TF)
+  real_time_factor: 1.0
+  start_time_sec: 1.0     # /clock 시작값 (0은 '미설정'으로 취급되는 노드가 있어 피함)
+  map_frame: map
+  base_frame: base_link
+  cmd_vel_topic: /cmd_vel
+  cmd_vel_timeout: 0.5
+  max_linear: 3.0         # m/s
+  max_angular: 1.5        # rad/s
+  odom_topic: /ground_truth/odom
+  scene_topic: /sim/scene_markers
+  npc_topic: /sim/npc_markers
+  traffic_topic: /sim/traffic      # PoseArray, 슬롯 순서 고정 (비활성 슬롯은 z=-1000)
+  events_topic: /sim/events        # JSON: 인지/감속/차로변경/추돌
+  scenario_topic: /sim/scenario    # JSON (latched): 사고 위치, 비콘 배치, 환경
+
+pandar40p:
+  enabled: true
+  rate_hz: 10.0
+  topic: /sensing/lidar/pandar/pointcloud_raw_ex      # nebula PointXYZIRCAEDT 형식
+  gt_topic: /ground_truth/lidar/pandar/labels         # 점별 시맨틱 라벨 (x,y,z,intensity,label)
+  sensor_id: 1001
+  min_range: 0.3
+  max_range: 200.0
+  range_at_10pct: 200.0
+  range_noise_std: 0.02
+  azimuth_resolution_deg: 0.2
+
+tele15:
+  enabled: true
+  rate_hz: 10.0
+  topic: /sensing/lidar/livox/points                  # livox_ros_driver2 PointCloud2 (xfer_format=0) 형식
+  sensor_id: 1002
+  pattern_csv: third_party/ref/tele.csv               # 240k pts/s 비반복 스캔 (livox_laser_simulation)
+  min_range: 0.1
+  max_range: 500.0
+  range_at_10pct: 320.0
+  range_noise_std: 0.02
+
+ars408:
+  enabled: true
+  rate_hz: 14.0           # ARS408 사이클 약 72ms
+  cluster_topic: /sensing/radar/ars408/clusters       # PointCloud2 (RViz 확인용)
+  scan_topic: /sensing/radar/ars408/scan              # radar_msgs/RadarScan
+  track_topic: /sensing/radar/ars408/objects          # radar_msgs/RadarTracks
+  marker_topic: /sensing/radar/ars408/object_markers
+  sensor_id: 1003
+  far:  {fov_deg: 9.0,  max_range: 250.0, range_res: 1.79, az_res_deg: 1.6, range_std: 0.20, az_std_deg: 0.1}
+  near: {fov_deg: 60.0, max_range: 70.0,  range_res: 0.39, az_res_deg: 3.2, range_std: 0.05, az_std_deg: 0.3,
+         wide_fov_deg: 45.0, wide_max_range: 40.0}   # |az|>45°는 40m까지
+  elevation_fov_deg: 14.0
+  ray_az_step_deg: 0.25
+  ray_el_step_deg: 1.0
+  velocity_std: 0.1
+  max_clusters: 250
+
+camera:
+  enabled: true
+  rate_hz: 10.0           # 실기 50fps. CPU 여유 있으면 올릴 것
+  image_topic: /sensing/camera/arducam/image_raw
+  info_topic: /sensing/camera/arducam/camera_info
+  optical_frame: camera_optical_link
+  width: 1920
+  height: 1200
+  # 임시 내부 파라미터: 3.6mm / 3.0um → f = 1200px. 왜곡은 데이터시트 HFOV 82°에 맞춘 추정값.
+  # 실측 체커보드 캘리브레이션 값으로 교체할 것.
+  K: [1200.0, 0.0, 960.0, 0.0, 1200.0, 600.0, 0.0, 0.0, 1.0]
+  D: [-0.105, 0.0, 0.0, 0.0, 0.0]
+  encoding: rgb8          # 실기 출력은 YUY2. RViz 확인 편의상 rgb8
+  near: 0.05
+  far: 800.0

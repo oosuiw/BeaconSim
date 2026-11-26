@@ -1,0 +1,101 @@
+"""설정 로드, 좌표 변환, 로봇 모델/URDF 공용 함수."""
+import os
+
+import numpy as np
+import yaml
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+
+def load_yaml(path):
+    if not os.path.isabs(path):
+        path = os.path.join(ROOT, path)
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def rpy_to_R(r, p, y):
+    """URDF 규약: 고정축 X(roll) → Y(pitch) → Z(yaw). R = Rz(y) Ry(p) Rx(r)."""
+    cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
+    Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+    Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+    return Rz @ Ry @ Rx
+
+
+def make_T(xyz=(0, 0, 0), rpy=(0, 0, 0)):
+    T = np.eye(4)
+    T[:3, :3] = rpy_to_R(*rpy)
+    T[:3, 3] = xyz
+    return T
+
+
+def planar_T(x, y, yaw, z=0.0):
+    return make_T((x, y, z), (0, 0, yaw))
+
+
+def R_to_quat(R):
+    """회전행렬 → (x, y, z, w)."""
+    t = np.trace(R)
+    if t > 0:
+        s = np.sqrt(t + 1.0) * 2
+        w, x, y, z = 0.25 * s, (R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s, (R[1, 0] - R[0, 1]) / s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+        w, x, y, z = (R[2, 1] - R[1, 2]) / s, 0.25 * s, (R[0, 1] + R[1, 0]) / s, (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+        w, x, y, z = (R[0, 2] - R[2, 0]) / s, (R[0, 1] + R[1, 0]) / s, 0.25 * s, (R[1, 2] + R[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+        w, x, y, z = (R[1, 0] - R[0, 1]) / s, (R[0, 2] + R[2, 0]) / s, (R[1, 2] + R[2, 1]) / s, 0.25 * s
+    return np.array([x, y, z, w])
+
+
+# 카메라 링크(x 전방, z 위) → 광학 프레임(z 전방, x 우, y 하)
+T_CAMLINK_OPTICAL = make_T((0, 0, 0), (-np.pi / 2, 0, -np.pi / 2))
+
+
+def sensor_mounts(robot_cfg):
+    """robot.yaml → {name: (frame_id, T_base_sensor)}"""
+    out = {}
+    for name, s in robot_cfg['sensors'].items():
+        out[name] = (s['frame_id'], make_T(s['xyz'], s['rpy']))
+    return out
+
+
+def load_robot_parts():
+    d = np.load(os.path.join(ROOT, 'robot', 'meshes', 'robot_parts.npz'))
+    names = sorted({k[:-2] for k in d.files})
+    return {n: (d[f'{n}_v'], d[f'{n}_f']) for n in names}
+
+
+ROBOT_PART_COLORS = {
+    'body': (0.85, 0.55, 0.10), 'pandar40p': (0.05, 0.15, 0.85), 'tele15': (0.85, 0.08, 0.05),
+    'ars408': (0.12, 0.12, 0.12), 'camera': (0.10, 0.45, 0.15),
+}
+
+
+def build_urdf(robot_cfg):
+    """robot.yaml 하나로 URDF 생성 → TF와 심 센서 포즈가 같은 값을 쓴다."""
+    mesh_dir = os.path.join(ROOT, 'robot', 'meshes')
+    lines = ['<?xml version="1.0"?>', '<robot name="safety_beacon">']
+    for part, c in ROBOT_PART_COLORS.items():
+        lines.append(f'  <material name="{part}_mat"><color rgba="{c[0]} {c[1]} {c[2]} 1"/></material>')
+    lines.append('  <link name="base_link">')
+    for part in ROBOT_PART_COLORS:
+        lines.append(f'    <visual name="{part}"><geometry><mesh filename="file://{mesh_dir}/{part}.stl"/></geometry>'
+                     f'<material name="{part}_mat"/></visual>')
+    lines.append('  </link>')
+
+    def joint(parent, child, xyz, rpy):
+        lines.append(f'  <link name="{child}"/>')
+        lines.append(f'  <joint name="{parent}_to_{child}" type="fixed"><parent link="{parent}"/><child link="{child}"/>'
+                     f'<origin xyz="{xyz[0]:.5f} {xyz[1]:.5f} {xyz[2]:.5f}" rpy="{rpy[0]:.6f} {rpy[1]:.6f} {rpy[2]:.6f}"/></joint>')
+
+    for name, s in robot_cfg['sensors'].items():
+        joint('base_link', s['frame_id'], s['xyz'], s['rpy'])
+        if name == 'camera':
+            joint(s['frame_id'], 'camera_optical_link', (0, 0, 0), (-np.pi / 2, 0, -np.pi / 2))
+    lines.append('</robot>')
+    return '\n'.join(lines)

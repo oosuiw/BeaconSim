@@ -1,0 +1,19 @@
+# 환경 / 캐시 / 결과
+.venv/
+__pycache__/
+*.pyc
+results/
+*.npy
+
+# 중요 자료 (공개 저장소에 올리지 않음 — 팀 내부 전달)
+*.stl
+*.STL
+*.step
+*.STEP
+*.pdf
+세이프티 비콘 시뮬레이터 구축 계획.md
+robot/meshes/
+config/robot.yaml
+
+# 제3자 자료 (각자 내려받기 — README '설치' 참고)
+third_party/
