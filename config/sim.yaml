@@ -64,6 +64,8 @@ environment:
 gnss:
   enabled: true
   topic: /sensing/gnss/fix
+  frame_id: gnss_link
+  antenna_xyz: [0.0, 0.0, 0.0]   # base_link 기준 안테나 위치 [m] (실측 후 수정, 모델 정답 위치도 이 점 기준으로 바꿀 것)
   rate_hz: 10.0
   depth_lost: 15.0        # 터널 입구에서 이만큼 들어가면 신호 단절 [m]
   approach: 20.0          # 갱문 주변 SINGLE 구간 [m]

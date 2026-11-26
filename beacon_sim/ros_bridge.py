@@ -16,11 +16,13 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import NavSatFix, NavSatStatus, PointCloud2, PointField
 from std_msgs.msg import ColorRGBA, Header, String
-from tf2_ros import TransformBroadcaster
+from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 from unique_identifier_msgs.msg import UUID
 from visualization_msgs.msg import Marker, MarkerArray
 
-from .common import R_to_quat
+import numpy as _np
+
+from .common import T_CAMLINK_OPTICAL, R_to_quat, make_T, sensor_mounts
 from .gnss import FIX, FLOAT, NONE, SINGLE
 
 T0_NS = 1_000_000_000          # /clock 시작 오프셋 (0은 '미설정'으로 취급되는 노드가 있어 피함)
@@ -87,8 +89,9 @@ def box_marker(frame, ns, mid, sp, T, rgba, stamp=None):
 
 
 class RosBridge:
-    def __init__(self, node, engine, cfg, markers=True, clock=True):
+    def __init__(self, node, engine, cfg, markers=True, clock=True, static_tf=True):
         self.node, self.e, self.cfg = node, engine, cfg
+        self.static_tf = static_tf
         self.markers, self.clock = markers, clock
         sc = cfg['sim']
         self.map_frame, self.base_frame = sc['map_frame'], sc['base_frame']
@@ -112,6 +115,7 @@ class RosBridge:
             self.pub['npc'] = cp(MarkerArray, sc['npc_topic'], 10)
             self.pub['radar_mk'] = cp(MarkerArray, cfg['ars408']['marker_topic'], 10)
         self.tfb = TransformBroadcaster(node)
+        self.stfb = StaticTransformBroadcaster(node) if static_tf else None
         node.create_subscription(Twist, sc['cmd_vel_topic'],
                                  lambda m: self.e.set_cmd('ros', m.linear.x, m.angular.z), 10)
         cam_hz = cfg['camera']['rate_hz']
@@ -119,8 +123,24 @@ class RosBridge:
         self.marker_every = max(1, int(round(0.1 / engine.DT)))
         self.publish_static()
 
+    def publish_static_tf(self):
+        """base_link → 센서 프레임 (robot.yaml), camera_link → camera_optical_link, base_link → gnss_link."""
+        if self.stfb is None:
+            return
+        stamp = t_to_msg(self.e.t)
+        tfs = []
+        for name, (frame, T) in sensor_mounts(self.e.robot_cfg).items():
+            tfs.append(pose_to_tf(T, self.base_frame, frame, stamp))
+            if name == 'camera':
+                tfs.append(pose_to_tf(T_CAMLINK_OPTICAL, frame, self.cfg['camera']['optical_frame'], stamp))
+        g = self.cfg.get('gnss', {})
+        tfs.append(pose_to_tf(make_T(g.get('antenna_xyz', [0.0, 0.0, 0.0])), self.base_frame,
+                              g.get('frame_id', 'gnss_link'), stamp))
+        self.stfb.sendTransform(tfs)
+
     def publish_static(self):
         e = self.e
+        self.publish_static_tf()
         d = {'scenario': e.scn.summary(), 'params': e.scn.sp.to_dict(), 'traffic': e.traffic.tp.to_dict(),
              'map': e.model.summary(), 'map_params': e.model.params.to_dict(), 'environment': e.env.to_dict()}
         self.pub['scenario'].publish(String(data=json.dumps(d, ensure_ascii=False, default=str)))
@@ -230,7 +250,7 @@ class RosBridge:
 
     def _publish_gnss(self, g, st):
         m = NavSatFix()
-        m.header.stamp, m.header.frame_id = st, 'gnss_link'
+        m.header.stamp, m.header.frame_id = st, self.cfg.get('gnss', {}).get('frame_id', 'gnss_link')
         m.status.service = NavSatStatus.SERVICE_GPS
         m.status.status = {FIX: NavSatStatus.STATUS_GBAS_FIX, FLOAT: NavSatStatus.STATUS_SBAS_FIX,
                            SINGLE: NavSatStatus.STATUS_FIX, NONE: NavSatStatus.STATUS_NO_FIX}[g['status']]

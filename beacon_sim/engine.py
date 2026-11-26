@@ -294,7 +294,9 @@ class SimEngine:
         if self.gnss.gp.enabled and self.t >= self.gnss_next - 1e-9:
             self.gnss_next += 1.0 / self.gnss.gp.rate_hz
             if not self._faulted('gnss'):
-                fired['gnss'] = self.gnss.step(self.t, self.T_wb, self.s_b)
+                T_ant = self.T_wb.copy()                    # 안테나 위치 (base_link + antenna_xyz)
+                T_ant[:3, 3] = self.T_wb[:3, :3] @ np.asarray(self.gnss.gp.antenna_xyz, float) + self.T_wb[:3, 3]
+                fired['gnss'] = self.gnss.step(self.t, T_ant, self.s_b)
         ev = self.traffic.events[self.n_events:] + self.events
         self.n_events = len(self.traffic.events)
         self.events = []

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # BeaconSim AppImage 빌드.  사용: packaging/build_appimage.sh [버전]
+#   INTERNAL=1 packaging/build_appimage.sh 0.2.1-team  → 팀 내부용: 로봇 모델 + tele.csv 포함 (공개 배포 금지)
 #  - 파이썬 3.10 독립 런타임(python-build-standalone) + 의존 패키지 + 코드/리소스 + RGL core(Apache-2.0)
 #  - 비콘 CAD 파생물(로봇 메시·포즈)과 tele.csv(라이선스 없음)는 넣지 않는다 → 첫 실행 시 STL 선택, Tele-15는 자체 패턴
 #  - 실행 PC에 ROS2 Humble이 있으면 AppRun이 setup.sh를 불러 rclpy 사용 (없으면 단독 실행)
@@ -37,6 +38,16 @@ R="$APPDIR/usr/share/beaconsim"
 mkdir -p "$R/third_party/rgl" "$R/LICENSES"
 cp -r beacon_sim config assets scenarios tools README.md "$R/"
 rm -f "$R/config/robot.yaml"; find "$R" -name '__pycache__' -prune -exec rm -rf {} +
+if [ "${INTERNAL:-0}" = "1" ]; then
+  echo "== 팀 내부용: 로봇 모델 + tele.csv 포함"
+  [ -f robot/meshes/robot_parts.npz ] && [ -f config/robot.yaml ] || { echo "로봇 모델 없음: tools/build_robot.py 먼저"; exit 1; }
+  [ -f third_party/ref/tele.csv ] || { echo "third_party/ref/tele.csv 없음"; exit 1; }
+  mkdir -p "$R/robot/meshes" "$R/third_party/ref"
+  cp robot/meshes/*.npz robot/meshes/*.stl "$R/robot/meshes/"
+  cp config/robot.yaml "$R/config/"
+  cp third_party/ref/tele.csv "$R/third_party/ref/"
+  printf '팀 내부용 빌드 — 비콘 CAD 파생물과 tele.csv 포함. 공개 배포하지 마세요.\n' > "$R/INTERNAL_BUILD.txt"
+fi
 unzip -q -o "$DL/rgl.zip" -d "$DL/rgl"
 cp "$(find "$DL/rgl" -name libRobotecGPULidar.so | head -1)" "$R/third_party/rgl/"
 fetch https://raw.githubusercontent.com/RobotecAI/RobotecGPULidar/v0.21.0/LICENSE "$DL/RGL-LICENSE"
@@ -53,5 +64,6 @@ cp "$APPDIR/beaconsim.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/"
 
 echo "== AppImage"
 OUT="$B/BeaconSim-${VER}-x86_64.AppImage"
+[ "${INTERNAL:-0}" = "1" ] && OUT="$B/BeaconSim-${VER}-team-x86_64.AppImage"
 ARCH=x86_64 "$DL/appimagetool" --appimage-extract-and-run --no-appstream "$APPDIR" "$OUT" >/dev/null
 ls -la "$OUT"

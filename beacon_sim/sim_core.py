@@ -18,13 +18,14 @@ def main():
     ap.add_argument('--config', default='config/sim.yaml')
     ap.add_argument('--robot', default='config/robot.yaml')
     ap.add_argument('--markers', action='store_true', help='RViz용 마커도 발행')
+    ap.add_argument('--no-static-tf', action='store_true', help='/tf_static 발행 안 함 (robot_state_publisher와 같이 쓸 때)')
     args, ros_args = ap.parse_known_args()
     rclpy.init(args=ros_args)
     node = Node('beacon_sim_core')
     log = node.get_logger()
     cfg = load_yaml(args.config)
     eng = SimEngine(cfg, load_yaml(args.robot), log=log.info)
-    bridge = RosBridge(node, eng, cfg, markers=args.markers)
+    bridge = RosBridge(node, eng, cfg, markers=args.markers, static_tf=not args.no_static_tf)
     sm = eng.scn.summary()
     log.info(f'맵 시드 {eng.model.params.seed}, 시나리오 시드 {eng.scn.sp.seed} | {sm["side"]} {sm["lane"]}차로, '
              f'사고 s={sm["accident_s"]} m, 비콘 배치 s={sm["beacon_start_s"]} m (역방향, /cmd_vel 대기) | '

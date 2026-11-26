@@ -21,6 +21,8 @@ TAU = {FIX: 5.0, FLOAT: 20.0, SINGLE: 30.0, NONE: 1.0}                          
 class GnssParams:
     enabled: bool = True
     topic: str = '/sensing/gnss/fix'
+    frame_id: str = 'gnss_link'
+    antenna_xyz: tuple = (0.0, 0.0, 0.0)
     rate_hz: float = 10.0
     depth_lost: float = 15.0        # 터널 입구에서 이만큼 들어가면 신호 단절 [m]
     approach: float = 20.0          # 갱문 바깥 이 거리 안은 SINGLE [m]

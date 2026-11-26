@@ -22,7 +22,7 @@ def generate_launch_description():
         DeclareLaunchArgument('camera', default_value='true'),
         Node(package='robot_state_publisher', executable='robot_state_publisher', output='screen',
              parameters=[{'robot_description': urdf, 'use_sim_time': True}]),
-        ExecuteProcess(cmd=[PY, '-u', '-m', 'beacon_sim.sim_core', '--markers', '--ros-args', '-p', 'use_sim_time:=false'],
+        ExecuteProcess(cmd=[PY, '-u', '-m', 'beacon_sim.sim_core', '--markers', '--no-static-tf', '--ros-args', '-p', 'use_sim_time:=false'],
                        cwd=ROOT, output='screen', name='sim_core'),
         ExecuteProcess(cmd=[PY, '-u', '-m', 'beacon_sim.camera_node', '--ros-args', '-p', 'use_sim_time:=true'],
                        cwd=ROOT, output='screen', name='camera', condition=IfCondition(LaunchConfiguration('camera'))),
