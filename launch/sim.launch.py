@@ -16,7 +16,7 @@ PY = os.path.join(ROOT, '.venv', 'bin', 'python')
 
 
 def generate_launch_description():
-    urdf = build_urdf(load_yaml(os.path.join(ROOT, 'config', 'robot.yaml')))
+    urdf = build_urdf(load_yaml('config/robot.yaml'))
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='false'),
         DeclareLaunchArgument('camera', default_value='true'),

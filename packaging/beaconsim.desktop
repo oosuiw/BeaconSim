@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=BeaconSim
+Comment=세이프티 비콘 시뮬레이터 (고속도로 2차 사고 예방)
+Exec=AppRun
+Icon=beaconsim
+Categories=Science;Engineering;
+Terminal=false

@@ -1,6 +1,21 @@
 # BeaconSim — 세이프티 비콘 RGL 경량 심
 
-## 설치
+## 바로 실행 (AppImage)
+
+[릴리스](https://github.com/oosuiw/BeaconSim/releases)에서 `BeaconSim-<버전>-x86_64.AppImage`를 받아:
+
+```bash
+chmod +x BeaconSim-*-x86_64.AppImage
+./BeaconSim-*-x86_64.AppImage                                   # GUI (처음 실행 시 비콘 CAD STL 선택)
+./BeaconSim-*-x86_64.AppImage scenarios [YAML|폴더] [--ros]      # 회귀 테스트 (기본: 동봉 시나리오)
+./BeaconSim-*-x86_64.AppImage export-map --seed 7 ~/maps/s7      # Autoware 맵 세트
+./BeaconSim-*-x86_64.AppImage build-robot --stl CAD.stl          # 로봇 모델 생성 (~/.config/beaconsim)
+```
+- PC에 ROS2 Humble이 있으면 자동으로 토픽 발행·`/cmd_vel` 수신 (`BEACONSIM_NO_ROS=1` 로 끔)
+- Tele-15: `~/.config/beaconsim/tele.csv`가 있으면 실제 패턴, 없으면 자체 로제트 근사 패턴
+- 빌드: `packaging/build_appimage.sh`
+
+## 설치 (소스)
 
 요구 사항: Ubuntu 22.04, NVIDIA RTX GPU + 드라이버 515 이상(RGL), OpenGL 3.3, (선택) ROS2 Humble.
 

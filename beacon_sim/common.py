@@ -4,14 +4,44 @@ import os
 import numpy as np
 import yaml
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))      # 배포 리소스 (AppImage 안은 읽기 전용)
+USER_DIR = os.environ.get('BEACONSIM_HOME', os.path.join(os.path.expanduser('~'), '.config', 'beaconsim'))
+CACHE_DIR = os.path.join(os.path.expanduser('~'), '.cache', 'beaconsim')
+
+
+def resource(rel):
+    """사용자 폴더(~/.config/beaconsim)에 있으면 그것, 없으면 배포 리소스."""
+    for base in (USER_DIR, ROOT):
+        p = os.path.join(base, rel)
+        if os.path.exists(p):
+            return p
+    return os.path.join(ROOT, rel)
+
+
+def writable_root():
+    """생성물(로봇 모델, sim.yaml 적용 등)을 쓸 위치: 저장소에서 실행하면 저장소, AppImage면 사용자 폴더."""
+    return ROOT if os.access(ROOT, os.W_OK) else USER_DIR
+
+
+def results_root():
+    return os.path.join(ROOT, 'results') if os.access(ROOT, os.W_OK) else \
+        os.path.join(os.path.expanduser('~'), 'BeaconSim_results')
 
 
 def load_yaml(path):
     if not os.path.isabs(path):
-        path = os.path.join(ROOT, path)
+        path = resource(path)
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def robot_mesh_dir():
+    return os.path.dirname(resource(os.path.join('robot', 'meshes', 'robot_parts.npz')))
+
+
+def has_robot_model():
+    return os.path.exists(resource(os.path.join('robot', 'meshes', 'robot_parts.npz'))) and \
+        os.path.exists(resource(os.path.join('config', 'robot.yaml')))
 
 
 def rpy_to_R(r, p, y):
@@ -65,7 +95,7 @@ def sensor_mounts(robot_cfg):
 
 
 def load_robot_parts():
-    d = np.load(os.path.join(ROOT, 'robot', 'meshes', 'robot_parts.npz'))
+    d = np.load(os.path.join(robot_mesh_dir(), 'robot_parts.npz'))
     names = sorted({k[:-2] for k in d.files})
     return {n: (d[f'{n}_v'], d[f'{n}_f']) for n in names}
 
@@ -78,7 +108,7 @@ ROBOT_PART_COLORS = {
 
 def build_urdf(robot_cfg):
     """robot.yaml 하나로 URDF 생성 → TF와 심 센서 포즈가 같은 값을 쓴다."""
-    mesh_dir = os.path.join(ROOT, 'robot', 'meshes')
+    mesh_dir = robot_mesh_dir()
     lines = ['<?xml version="1.0"?>', '<robot name="safety_beacon">']
     for part, c in ROBOT_PART_COLORS.items():
         lines.append(f'  <material name="{part}_mat"><color rgba="{c[0]} {c[1]} {c[2]} 1"/></material>')

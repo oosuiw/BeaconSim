@@ -29,7 +29,8 @@ import numpy as np
 from imgui_bundle import imgui
 
 from . import scene
-from .common import ROOT, T_CAMLINK_OPTICAL, load_robot_parts, load_yaml, sensor_mounts
+from .common import (ROOT, T_CAMLINK_OPTICAL, has_robot_model, load_robot_parts, load_yaml, resource,
+                     sensor_mounts, writable_root)
 from .engine import EngineThread, SimEngine
 from .environment import TIME_KO, WEATHER_KO, EnvParams
 from .export import export_all
@@ -100,10 +101,14 @@ def lanelet_overlay(m):
     return np.concatenate(P).astype('f4'), np.concatenate(C).astype('f4')
 
 
-def apply_to_sim_config(blocks, path=os.path.join(ROOT, 'config', 'sim.yaml')):
-    """config/sim.yaml 의 블록(map/scenario/traffic/environment)을 교체 (주석·다른 설정 유지)."""
-    with open(path) as f:
+def apply_to_sim_config(blocks, path=None):
+    """config/sim.yaml 의 블록(map/scenario/traffic/environment)을 교체 (주석·다른 설정 유지).
+    저장소에서 실행하면 저장소 파일, AppImage면 ~/.config/beaconsim/config/sim.yaml."""
+    path = path or os.path.join(writable_root(), 'config', 'sim.yaml')
+    src = path if os.path.exists(path) else resource(os.path.join('config', 'sim.yaml'))
+    with open(src) as f:
         text = f.read()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     for name, vals in blocks.items():
         block = f'{name}:\n' + ''.join(f'  {k}: {v}\n' for k, v in vals.items())
         text, n = re.subn(rf'^{name}:\n(?:[ \t]+.*\n)*', block, text, count=1, flags=re.M)
@@ -228,8 +233,8 @@ class App:
         self.build_future = None
         self.export_future = None
 
-        self.base_cfg = load_yaml(os.path.join(ROOT, 'config', 'sim.yaml'))
-        self.robot_cfg = load_yaml(os.path.join(ROOT, 'config', 'robot.yaml'))
+        self.base_cfg = load_yaml('config/sim.yaml')
+        self.robot_cfg = None
         st_ = self._load_settings()
         self.params, self.sparams, self.tparams, self.eparams = st_['params'], st_['scenario'], st_['traffic'], st_['env']
         self.export_dir = st_['export_dir']
@@ -254,19 +259,56 @@ class App:
         self.cam_tex = None
         self.target_fbo = None
 
-        try:
-            self.robot_parts = load_robot_parts()
-        except Exception as e:      # noqa: BLE001
-            self.robot_parts = None
-            self.log(f'로봇 메시 없음 (tools/build_robot.py 실행 필요): {e}')
         self.model = self.parts = self.engine = self.eth = None
         self.renderer = None
+        self.robot_parts = None
+        self.robot_future = None
         self.camera = CameraRenderer(self.ctx, self.base_cfg['camera'])
-        _, T_bc = sensor_mounts(self.robot_cfg)['camera']
-        self.T_b_opt = T_bc @ T_CAMLINK_OPTICAL
         self.ros = RosLink(self.log) if ros else None
         self.log(f'폰트: {self.font_path}')
-        self.rebuild(map_too=True, sync=True)
+        if has_robot_model():
+            self._load_robot()
+            self.rebuild(map_too=True, sync=True)
+        else:
+            self.log('로봇 모델이 없습니다. 비콘 CAD(STL)를 선택하세요.')
+
+    # ------------------------------------------------------------ 로봇 모델 (첫 실행)
+    def _load_robot(self):
+        self.robot_cfg = load_yaml('config/robot.yaml')
+        self.robot_parts = load_robot_parts()
+        _, T_bc = sensor_mounts(self.robot_cfg)['camera']
+        self.T_b_opt = T_bc @ T_CAMLINK_OPTICAL
+
+    def build_robot_async(self, stl_path):
+        from .robot_build import build
+        self.log(f'로봇 모델 생성 중: {stl_path}')
+        self.robot_future = self.pool.submit(build, stl_path, writable_root(), True, self.log)
+
+    def _robot_setup_modal(self, W, H):
+        imgui.set_next_window_pos(imgui.ImVec2(W / 2, H / 2), imgui.Cond_.always, imgui.ImVec2(0.5, 0.5))
+        imgui.set_next_window_size(imgui.ImVec2(560 * self.scale, 0))
+        imgui.begin('robot_setup', None, imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move)
+        S.section(FA.ICON_FA_TOWER_BROADCAST, '비콘 로봇 모델이 필요합니다', S.WARN)
+        imgui.text_wrapped('비콘 CAD(STL, 단위 mm)를 선택하면 로봇 메시와 센서 장착 포즈를 만들어 '
+                           f'{writable_root()} 에 저장합니다. CAD는 공개 배포하지 않으므로 팀 내부에서 받으세요.')
+        imgui.spacing()
+        busy = self.robot_future is not None and not self.robot_future.done()
+        imgui.begin_disabled(busy)
+        if S.primary_button(f'{FA.ICON_FA_FOLDER_OPEN}  ' + ('생성 중...' if busy else 'STL 파일 선택'),
+                            imgui.ImVec2(-1, 0)):
+            try:
+                from imgui_bundle import portable_file_dialogs as pfd
+                r = pfd.open_file('비콘 CAD (STL) 선택', os.path.expanduser('~'), ['STL', '*.stl *.STL']).result()
+                if r:
+                    self.build_robot_async(r[0])
+            except Exception as e:      # noqa: BLE001
+                self.log(f'파일 선택 창을 열 수 없음: {e} — 명령행: BeaconSim.AppImage --robot-stl <경로>')
+        imgui.end_disabled()
+        with self.log_lock:
+            tail = list(self.log_lines)[-6:]
+        for ln in tail:
+            S.muted(ln)
+        imgui.end()
 
     # ------------------------------------------------------------ 설정/로그
     def log(self, msg):
@@ -381,6 +423,8 @@ class App:
                  f'차선 불량 {ms["lane_wear_pct"]}%) | 시나리오 시드 {scn.sp.seed}: {sm["side"]} {sm["lane"]}차로, '
                  f'사고 s={sm["accident_s"]:.0f} m | 환경 {eng.env.label()} | '
                  f'교통 {"켜짐" if eng.traffic.tp.enabled else "꺼짐(검증 모드)"}')
+        if 'tele15' in eng.sensors:
+            self.log(f'Tele-15 스캔 패턴: {eng.sensors["tele15"].pattern}')
         self._preset('beacon')
 
     def export_async(self):
@@ -1166,6 +1210,15 @@ class App:
                 ov.draw('scc_lines', np.array(segs), SCC_BEACON, VP, moderngl.LINES)
 
     def frame(self, dt):
+        if self.robot_future is not None and self.robot_future.done():
+            fut, self.robot_future = self.robot_future, None
+            try:
+                fut.result()
+                self._load_robot()
+                self.log('로봇 모델 준비 완료 → 시뮬레이션 시작')
+                self.rebuild(map_too=True)
+            except Exception as ex:     # noqa: BLE001
+                self.log(f'로봇 모델 생성 실패: {ex}')
         if self.build_future is not None and self.build_future.done():
             fut, self.build_future = self.build_future, None
             try:
@@ -1197,17 +1250,20 @@ class App:
         imgui.new_frame()
         fw, fh = glfw.get_framebuffer_size(self.win)
         P_, V_, _ = self._view(fw / max(fh, 1))
-        self._ui(snap)
-        self._world_labels(snap, P_ @ V_)
+        if self.robot_parts is None:
+            self._robot_setup_modal(*imgui.get_io().display_size)
+        else:
+            self._ui(snap)
+            self._world_labels(snap, P_ @ V_)
         imgui.render()
 
         (self.target_fbo or self.ctx.screen).use()
         self.ctx.viewport = (0, 0, fw, fh)
-        self.ctx.clear(*self.renderer.sky, 1.0)
+        self.ctx.clear(*(self.renderer.sky if self.renderer else (0.06, 0.07, 0.09)), 1.0)
         self.ctx.enable(moderngl.DEPTH_TEST)
         P, V, eye = self._view(fw / max(fh, 1))
         VP = P @ V
-        if snap is not None:
+        if snap is not None and self.renderer is not None:
             hidden = set()
             in_tun = bool(self.model.in_tunnel(snap['s_b'], margin=30)) and self.show['auto_roof']
             if not self.show['terrain'] or in_tun:
@@ -1268,7 +1324,11 @@ def main():
     ap.add_argument('--warmup', type=float, default=0.0, help='스크린샷 전 대기 [s]')
     ap.add_argument('--screenshot', default=None)
     ap.add_argument('--set', action='append', default=[], help='테스트용 파라미터 (예: env.weather=rain)')
+    ap.add_argument('--robot-stl', default=None, help='비콘 CAD(STL)로 로봇 모델 생성 후 시작')
     a = ap.parse_args()
+    if a.robot_stl:
+        from .robot_build import build
+        build(a.robot_stl, writable_root(), True)
     app = App(hidden=a.hidden, ros=not a.no_ros)
     if a.set:
         if any(kv.startswith('scn.seed=') for kv in a.set):

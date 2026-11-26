@@ -1,0 +1,24 @@
+#!/bin/sh
+# BeaconSim AppImage 진입점
+#   BeaconSim.AppImage                      통합 시뮬레이터 GUI (추가 인자는 beacon_sim.app 으로)
+#   BeaconSim.AppImage scenarios [YAML|폴더] [--ros] [--out DIR]   회귀 테스트 (기본: 동봉 scenarios/)
+#   BeaconSim.AppImage export-map --seed 7 OUT_DIR                  Lanelet2 OSM/PCD 맵 세트 저장
+#   BeaconSim.AppImage build-robot --stl CAD.stl                     로봇 모델 생성 (~/.config/beaconsim)
+#   BEACONSIM_NO_ROS=1 이면 ROS2 연동을 끈다
+HERE="$(dirname "$(readlink -f "$0")")"
+ROOT="$HERE/usr/share/beaconsim"
+PY="$HERE/usr/python/bin/python3"
+export PYTHONNOUSERSITE=1
+unset PYTHONHOME
+if [ -z "$BEACONSIM_NO_ROS" ] && [ -f /opt/ros/humble/setup.sh ]; then
+  # ROS2 Humble(Python 3.10)이 있으면 rclpy·메시지 패키지 사용
+  . /opt/ros/humble/setup.sh >/dev/null 2>&1 || true
+fi
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+cd "$ROOT"
+case "$1" in
+  scenarios)   shift; exec "$PY" "$ROOT/tools/run_scenarios.py" "$@" ;;
+  export-map)  shift; exec "$PY" -m beacon_sim.export "$@" ;;
+  build-robot) shift; exec "$PY" -m beacon_sim.robot_build "$@" ;;
+  *)           exec "$PY" -m beacon_sim.app "$@" ;;
+esac

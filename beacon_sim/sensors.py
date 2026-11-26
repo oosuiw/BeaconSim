@@ -152,10 +152,12 @@ LIVOX_DTYPE = np.dtype({'names': ['x', 'y', 'z', 'intensity', 'tag', 'line', 'ti
 
 
 def load_livox_pattern(csv_path):
-    """livox_laser_simulation scan_mode CSV (Time/s, Azimuth/deg, Zenith/deg) → (t, az, el) rad. npy 캐시."""
-    if not os.path.isabs(csv_path):
-        csv_path = os.path.join(ROOT, csv_path)
-    cache = csv_path + '.npy'
+    """livox_laser_simulation scan_mode CSV (Time/s, Azimuth/deg, Zenith/deg) → (t, az, el) rad. npy 캐시(사용자 캐시 폴더)."""
+    import hashlib
+    from .common import CACHE_DIR
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    tag = hashlib.md5(os.path.abspath(csv_path).encode()).hexdigest()[:8]
+    cache = os.path.join(CACHE_DIR, f'{os.path.basename(csv_path)}.{tag}.npy')
     if os.path.exists(cache) and os.path.getmtime(cache) >= os.path.getmtime(csv_path):
         a = np.load(cache)
     else:
@@ -167,11 +169,37 @@ def load_livox_pattern(csv_path):
     return t, az, el
 
 
+def rosette_pattern(hfov_deg=14.5, vfov_deg=16.2, rate=240000.0, duration=4.0, f1=1103.9, f2=637.3):
+    """Livox식 로제트(무아레) 비반복 스캔 근사: 두 회전 프리즘의 합성 방향.
+    (x, y) = ½(cos 2πf1 t + cos 2πf2 t, sin 2πf1 t − sin 2πf2 t) → 단위 원판 → FOV로 스케일.
+    실제 Tele-15 패턴과는 다르다 (tele.csv가 있으면 그쪽을 쓴다)."""
+    t = np.arange(int(rate * duration)) / rate
+    a1, a2 = 2 * np.pi * f1 * t, 2 * np.pi * f2 * t
+    x = 0.5 * (np.cos(a1) + np.cos(a2))
+    y = 0.5 * (np.sin(a1) - np.sin(a2))
+    return t, np.radians(x * hfov_deg / 2), np.radians(y * vfov_deg / 2)
+
+
+def find_tele_pattern(cfg_path):
+    """tele.csv 위치: 설정 경로(사용자 폴더 우선) → ~/.config/beaconsim/tele.csv. 없으면 None."""
+    from .common import USER_DIR, resource
+    for p in (resource(cfg_path) if cfg_path else None, os.path.join(USER_DIR, 'tele.csv')):
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
 class Tele15:
     def __init__(self, cfg, seed=2):
         self.cfg = cfg
         self.rng = np.random.default_rng(seed)
-        t, self.az, self.el = load_livox_pattern(cfg['pattern_csv'])
+        path = find_tele_pattern(cfg.get('pattern_csv'))
+        if path:
+            t, self.az, self.el = load_livox_pattern(path)
+            self.pattern = f'tele.csv ({path})'
+        else:
+            t, self.az, self.el = rosette_pattern()
+            self.pattern = '자체 로제트 패턴 (tele.csv 없음)'
         self.dt = float(np.median(np.diff(t)))     # 4.1667us (240k pts/s)
         self.n = int(round(1.0 / cfg['rate_hz'] / self.dt))
         self.cursor = 0

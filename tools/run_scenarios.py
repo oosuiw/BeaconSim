@@ -23,7 +23,7 @@ import time
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from beacon_sim.common import ROOT, load_yaml  # noqa: E402
+from beacon_sim.common import ROOT, load_yaml, resource, results_root  # noqa: E402
 from beacon_sim.engine import EngineThread, SimEngine  # noqa: E402
 from beacon_sim.evaluate import Metrics, judge  # noqa: E402
 
@@ -139,15 +139,16 @@ def fmt(v):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('paths', nargs='+')
-    ap.add_argument('--out', default=os.path.join(ROOT, 'results', time.strftime('%Y%m%d_%H%M%S')))
+    ap.add_argument('paths', nargs='*', help='시나리오 YAML 또는 폴더 (기본: 동봉된 scenarios/)')
+    ap.add_argument('--out', default=os.path.join(results_root(), time.strftime('%Y%m%d_%H%M%S')))
     ap.add_argument('--ros', action='store_true', help='ROS2 발행/구독 + 실시간 (상위 제어기·측위·차선검출 연동)')
-    ap.add_argument('--config', default=os.path.join(ROOT, 'config', 'sim.yaml'))
+    ap.add_argument('--config', default=resource(os.path.join('config', 'sim.yaml')))
     a = ap.parse_args()
     files = []
+    a.paths = a.paths or [os.path.join(ROOT, 'scenarios')]
     for p in a.paths:
         files += sorted(glob.glob(os.path.join(p, '*.yaml'))) if os.path.isdir(p) else [p]
-    base, robot = load_yaml(a.config), load_yaml(os.path.join(ROOT, 'config', 'robot.yaml'))
+    base, robot = load_yaml(a.config), load_yaml('config/robot.yaml')
     ros = None
     if a.ros:
         import rclpy
