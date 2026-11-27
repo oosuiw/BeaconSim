@@ -6,6 +6,7 @@
 - 환경: 낮/황혼/밤, 맑음/비/안개/눈 (랜덤 또는 지정)
 - 센서 시각화: Pandar40P, Tele-15, ARS408, GNSS(ZED-F9P), 카메라 창
 - ROS2가 설치돼 있으면 같은 토픽으로 발행 (RViz 불필요)
+- 시작 화면에서 모드 선택: 개발(조건 즉시 적용) / 시험(조건 잠금 + PASS/FAIL 리포트) / 회귀(시나리오 일괄 실행)
 
 조작: 3D 뷰 좌클릭 드래그 회전 / 우클릭 드래그 이동 / 휠 확대
       방향키 = 비콘 주행(↑ 전진 ↓ 후진 ←→ 회전), Space 일시정지, F 비콘 따라가기
@@ -41,6 +42,9 @@ from .ui_style import FA
 from .render import CameraRenderer, OverlayRenderer, SceneRenderer
 from .roadgen import GENERATOR_VERSION, RoadParams, generate
 from .traffic import B_CRASH, ScenarioParams, TrafficParams
+from .app_start import MODE_KO, StartMixin, default_test
+from .evaluate import subscribe_eval
+from .session import TestSession
 
 CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.config', 'beaconsim')
 FONT_CANDIDATES = [
@@ -200,7 +204,7 @@ class RosLink:
                 pass
 
 
-class App:
+class App(StartMixin):
     def __init__(self, width=1700, height=1000, hidden=False, ros=True):
         if not glfw.init():
             raise RuntimeError('GLFW 초기화 실패 (디스플레이가 없나요?)')
@@ -239,6 +243,18 @@ class App:
         self.params, self.sparams, self.tparams, self.eparams = st_['params'], st_['scenario'], st_['traffic'], st_['env']
         self.export_dir = st_['export_dir']
         self.rand_map, self.rand_scn = st_.get('rand_map', False), st_.get('rand_scn', True)
+        # 모드: None = 시작 화면, 'dev' | 'test' | 'regress'
+        self.mode, self.prev_mode = None, None
+        self.mode_sel = st_.get('mode', 'dev') if st_.get('mode') in ('dev', 'test', 'regress') else 'dev'
+        self.test = st_.get('test') or default_test()
+        self.gnss_override = {}
+        self.applied = None                # 지금 실행 중인 조건 (변경 감지용)
+        self.session = None                # 시험 세션
+        self.test_result = None
+        self.result_open = False
+        self.regress = None
+        self.regress_sel, self.regress_ros = {}, False
+        self.start_tab = 0
         self.export_pcd = True
         self.show = dict(terrain=True, tunnel=True, lanelet=False, vehicles=True, robot=True, markers=True,
                          pandar=True, tele=True, radar=True, gnss=True, scc=True, camera=True, env_view=True)
@@ -268,7 +284,6 @@ class App:
         self.log(f'폰트: {self.font_path}')
         if has_robot_model():
             self._load_robot()
-            self.rebuild(map_too=True, sync=True)
         else:
             self.log('로봇 모델이 없습니다. 비콘 CAD(STL)를 선택하세요.')
 
@@ -334,7 +349,7 @@ class App:
                              ('env', EnvParams)]:
                 if key in d:
                     out[key] = pick(cls, d[key])
-            for k in ('export_dir', 'rand_map', 'rand_scn'):
+            for k in ('export_dir', 'rand_map', 'rand_scn', 'mode', 'test'):
                 if k in d:
                     out[k] = d[k]
         except Exception:           # noqa: BLE001
@@ -345,7 +360,8 @@ class App:
         with open(os.path.join(CONFIG_DIR, 'app.json'), 'w') as f:
             json.dump({'params': self.params.to_dict(), 'scenario': self.sparams.to_dict(),
                        'traffic': self.tparams.to_dict(), 'env': self.eparams.to_dict(),
-                       'export_dir': self.export_dir, 'rand_map': self.rand_map, 'rand_scn': self.rand_scn},
+                       'export_dir': self.export_dir, 'rand_map': self.rand_map, 'rand_scn': self.rand_scn,
+                       'mode': self.mode_sel, 'test': self.test},
                       f, indent=1)
 
     # ------------------------------------------------------------ 빌드 (맵/시나리오/엔진)
@@ -355,6 +371,10 @@ class App:
         cfg['scenario'] = self.sparams.to_dict()
         cfg['traffic'] = self.tparams.to_dict()
         cfg['environment'] = self.eparams.to_dict()
+        if self.gnss_override:
+            cfg['gnss'].update(self.gnss_override)
+            cfg['gnss_override'] = dict(self.gnss_override)
+        cfg['faults'] = copy.deepcopy(self.test.get('faults') or []) if self.mode == 'test' else []
         return cfg
 
     def _build_job(self, cfg, map_too, model, parts):
@@ -375,9 +395,12 @@ class App:
         if self.rand_scn:
             self.sparams.seed = int(rng.integers(0, 2 ** 31 - 1))
         self._save_settings()
+        if self.session is not None and not self.session.done:
+            self._finish_test('재시작', show=False)
         if self.eth is not None:
             self.eth.stop()
             self.eth = None
+        self.applied = self._cond()
         cfg = self._make_cfg()
         self.log(('맵·' if map_too else '') + f'시나리오 생성 중... (맵 시드 {self.params.seed}, 시나리오 시드 {self.sparams.seed})')
         args = (cfg, map_too or self.model is None, self.model, self.parts)
@@ -386,6 +409,15 @@ class App:
         else:
             self.build_cfg = cfg
             self.build_future = self.pool.submit(self._build_job, *args)
+
+    def restart(self, map_too=False):
+        """R/G/적용/다시 시험: 맵 조건이 바뀌었으면 맵도 다시 만든다. 시험 중이면 결과를 저장하고 새 시험."""
+        if self.mode not in ('dev', 'test'):
+            return
+        if self.applied is not None and self.applied['map'] != self._cond()['map']:
+            map_too = True
+        self.paused = False
+        self.rebuild(map_too=map_too)
 
     def _apply(self, model, parts, overlay, eng, cfg):
         old = self.engine
@@ -414,7 +446,17 @@ class App:
         self.gnss_trail.clear()
         self.truth_trail.clear()
         self.cam_next_t = 0.0
-        on_step = self.ros.attach(eng, cfg) if self.ros is not None else None
+        ros_step = self.ros.attach(eng, cfg) if self.ros is not None else None
+        self.session = None
+        if self.mode == 'test':
+            self.session = TestSession(eng, self.test, log=self.log)
+            if self.ros is not None and self.ros.ok and self.test.get('topics'):
+                self.session.subs = subscribe_eval(self.ros.node, self.session.met, eng, self.test['topics'])
+            self.log(f'시험 시작: {self.test.get("name")} '
+                     f'({"제한 없음" if not self.session.duration else f"{self.session.duration:.0f} s"}, '
+                     f'기준 {len(self.test.get("criteria") or {})}개)')
+        steps = [f for f in (ros_step, self.session.on_step if self.session else None) if f is not None]
+        on_step = (lambda e, f, ev: [st(e, f, ev) for st in steps]) if steps else None
         self.eth = EngineThread(eng, self.rtf, on_step)
         self.eth.paused = self.paused
         self.eth.start()
@@ -449,6 +491,8 @@ class App:
 
     # ------------------------------------------------------------ 카메라 조작
     def _on_drag(self, dx, dy, buttons):
+        if self.mode not in ('dev', 'test') or self.model is None:
+            return
         c = self.cam
         if buttons[0]:
             c['yaw'] -= dx * 0.005
@@ -466,7 +510,9 @@ class App:
         self.cam['dist'] = float(np.clip(self.cam['dist'] * (0.88 ** dy), 2.0, 8000.0))
 
     def _on_key(self, key):
-        acts = {glfw.KEY_G: lambda: self.rebuild(map_too=True), glfw.KEY_R: lambda: self.rebuild(),
+        if self.mode not in ('dev', 'test'):
+            return
+        acts = {glfw.KEY_G: lambda: self.restart(map_too=True), glfw.KEY_R: lambda: self.restart(),
                 glfw.KEY_SPACE: self._toggle_pause, glfw.KEY_F: lambda: setattr(self, 'follow', not self.follow),
                 glfw.KEY_1: lambda: self._preset('beacon'), glfw.KEY_2: lambda: self._preset('overview'),
                 glfw.KEY_3: lambda: self._preset('tunnel'),
@@ -509,8 +555,12 @@ class App:
             return glfw.get_key(self.win, key) == glfw.PRESS
         v = (self.key_speed if k(glfw.KEY_UP) else 0.0) - (self.key_speed if k(glfw.KEY_DOWN) else 0.0)
         w = (self.key_yaw if k(glfw.KEY_LEFT) else 0.0) - (self.key_yaw if k(glfw.KEY_RIGHT) else 0.0)
+        if self.mode not in ('dev', 'test'):
+            return
         if v or w:
             self.engine.set_cmd('key', v, w)
+        if self.session is not None and not self.session.done and not self.paused:
+            self.session.keyboard(bool(v or w))
 
     # ------------------------------------------------------------ UI
     # ------------------------------------------------------------ UI (디자인: ui_style.py)
@@ -524,6 +574,7 @@ class App:
         if self.show['camera'] and self.cam_tex is not None:
             self._camera_window(W, H)
         self._help_popup()
+        self._result_modal()
 
     # ---- 왼쪽 사이드바
     def _sidebar(self, snap, pw, H):
@@ -539,12 +590,25 @@ class App:
         imgui.pop_font()
         imgui.same_line()
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 6)
-        S.muted(f'v{GENERATOR_VERSION}  ·  세이프티 비콘 시뮬레이터')
+        S.muted(f'v{GENERATOR_VERSION}')
+        imgui.same_line()
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - 3)
+        S.chip(MODE_KO.get(self.mode, ''), S.WARN if self.mode == 'test' else S.ACCENT,
+               FA.ICON_FA_CLIPBOARD_CHECK if self.mode == 'test' else FA.ICON_FA_SCREWDRIVER_WRENCH)
+        imgui.same_line(pw - 50 * self.scale)
+        if imgui.button(FA.ICON_FA_HOUSE):
+            self.go_home()
+        S.tip('시작 화면 (모드 변경 · 조건 설정 · 회귀 실행)')
         imgui.spacing()
+        if self.mode == 'test':
+            self._test_card(snap)
+        self._change_banner()
 
         tabs = [(FA.ICON_FA_ROAD, '맵', self._tab_map), (FA.ICON_FA_CAR_BURST, '시나리오', lambda: self._tab_scenario(snap)),
                 (FA.ICON_FA_CAR_SIDE, '교통', self._tab_traffic), (FA.ICON_FA_CLOUD_SUN_RAIN, '환경', self._tab_env),
                 (FA.ICON_FA_EYE, '보기', self._tab_view), (FA.ICON_FA_FLOPPY_DISK, '저장', self._tab_export)]
+        if self.mode == 'test':
+            tabs[5] = (FA.ICON_FA_CLIPBOARD_CHECK, '시험', self._tab_test)
         # 아이콘 탭 (2줄 x 3)
         bw = (pw - 28 * self.scale - 2 * 6) / 3
         for k, (ic, label, _) in enumerate(tabs):
@@ -622,15 +686,17 @@ class App:
             self.rtf = speeds[new]
             if self.eth is not None:
                 self.eth.set_rtf(self.rtf)
+            if self.session is not None and not self.session.done:
+                self.session.rtf_changed(self.rtf)
         S.tip('시뮬레이션 배속')
         imgui.same_line()
         imgui.begin_disabled(busy)
         if imgui.button(FA.ICON_FA_ROTATE_RIGHT):
-            self.rebuild()
-        S.tip('시나리오 재시작 (R) — 시나리오·교통·환경 다시 생성')
+            self.restart()
+        S.tip('재시작 (R) — 시험 모드면 지금 결과를 저장하고 새 시험')
         imgui.same_line()
         if imgui.button(FA.ICON_FA_MAP):
-            self.rebuild(map_too=True)
+            self.restart(map_too=True)
         S.tip('맵 재생성 (G)')
         imgui.end_disabled()
         if snap is not None:
@@ -725,8 +791,10 @@ class App:
             _, p.region_lon = imgui.input_float('지역 경도', p.region_lon, 0.1, 1.0, '%.4f')
             imgui.tree_pop()
         S.end_card()
+        if self.mode is None:
+            return
         if S.primary_button(f'{FA.ICON_FA_MAP}  맵 재생성  (G)', imgui.ImVec2(-1, 0)):
-            self.rebuild(map_too=True)
+            self.restart(map_too=True)
         if self.model is not None:
             sm = self.model.summary()
             S.begin_card('map_info')
@@ -766,8 +834,10 @@ class App:
         _, self.key_speed = imgui.slider_float('방향키 속도', self.key_speed, 0.2, 3.0, '%.1f m/s')
         _, self.key_yaw = imgui.slider_float('방향키 회전', self.key_yaw, 0.1, 1.5, '%.2f rad/s')
         S.end_card()
+        if self.mode is None:
+            return
         if S.primary_button(f'{FA.ICON_FA_ROTATE_RIGHT}  시나리오 재시작  (R)', imgui.ImVec2(-1, 0)):
-            self.rebuild()
+            self.restart()
         if self.engine is not None:
             sm = self.engine.scn.summary()
             S.begin_card('scn_info')
@@ -810,7 +880,8 @@ class App:
         _, tp.scc_moving_min = imgui.slider_float('이동 판정 속도', tp.scc_moving_min, 0.1, 3.0, '%.1f m/s')
         S.muted('정지한 비콘은 무시, 사고 현장 쪽으로 후진하면 앞차로 인식')
         S.end_card()
-        S.muted(f'{FA.ICON_FA_CIRCLE_INFO}  변경은 시나리오 재시작(R) 시 반영')
+        if self.mode is not None:
+            S.muted(f'{FA.ICON_FA_CIRCLE_INFO}  변경은 재시작(R) 시 반영')
 
     def _tab_env(self):
         e = self.eparams
@@ -838,14 +909,13 @@ class App:
             _, e.p_snow = imgui.slider_float('눈', e.p_snow, 0.0, 1.0, '%.2f')
             imgui.tree_pop()
         S.end_card()
-        if self.engine is not None:
+        if self.engine is not None and self.mode is not None:
             env = self.engine.env
             S.begin_card('env_now')
             S.section(FA.ICON_FA_CIRCLE_INFO, f'현재  {env.label()}', S.MUTED)
             S.muted(f'카메라 대기 산란 {env.fog_dist:.0f} m · LiDAR 감쇠 α {env.alpha:.4f}/m')
             S.muted(f'허위점 {env.false_rate:.4f} · 노면 젖음 {env.wet:.2f} · 레이더 SNR −{env.radar_snr_loss:.1f} dB')
             S.end_card()
-        S.muted(f'{FA.ICON_FA_CIRCLE_INFO}  변경은 시나리오 재시작(R) 시 반영')
 
     def _tab_view(self):
         S.begin_card('v_sensor')
@@ -1215,8 +1285,7 @@ class App:
             try:
                 fut.result()
                 self._load_robot()
-                self.log('로봇 모델 준비 완료 → 시뮬레이션 시작')
-                self.rebuild(map_too=True)
+                self.log('로봇 모델 준비 완료 → 모드를 고르고 시작하세요')
             except Exception as ex:     # noqa: BLE001
                 self.log(f'로봇 모델 생성 실패: {ex}')
         if self.build_future is not None and self.build_future.done():
@@ -1242,6 +1311,12 @@ class App:
                     self.log(f'[{ev[0]:.1f}s] 차량 #{ev[2]} {ev[3]}')
                 elif ev[1] in ('beacon_contact', 'beacon_damaged'):
                     self.log(f'[{ev[0]:.1f}s] 차량 #{ev[2] if ev[2] >= 0 else "-"} {ev[3]}')
+            s = self.session
+            if s is not None and not s.done and s.duration and snap['t'] >= s.duration:
+                self._finish_test('시험 시간 종료')
+                self.paused = True
+                if self.eth is not None:
+                    self.eth.paused = True
             if self.follow:
                 self.cam['target'] = snap['T_wb'][:3, 3] + np.array([0, 0, 0.5])
             self._update_camera_sensor(snap)
@@ -1252,6 +1327,8 @@ class App:
         P_, V_, _ = self._view(fw / max(fh, 1))
         if self.robot_parts is None:
             self._robot_setup_modal(*imgui.get_io().display_size)
+        elif self.mode not in ('dev', 'test'):
+            self._start_screen(*imgui.get_io().display_size)
         else:
             self._ui(snap)
             self._world_labels(snap, P_ @ V_)
@@ -1263,7 +1340,7 @@ class App:
         self.ctx.enable(moderngl.DEPTH_TEST)
         P, V, eye = self._view(fw / max(fh, 1))
         VP = P @ V
-        if snap is not None and self.renderer is not None:
+        if snap is not None and self.renderer is not None and self.mode in ('dev', 'test'):
             hidden = set()
             in_tun = bool(self.model.in_tunnel(snap['s_b'], margin=30)) and self.show['auto_roof']
             if not self.show['terrain'] or in_tun:
@@ -1305,6 +1382,10 @@ class App:
         self.close()
 
     def close(self):
+        if self.session is not None and not self.session.done:
+            self._finish_test('프로그램 종료', show=False)
+        if self.regress is not None:
+            self.regress.stop()
         self._save_settings()
         if self.eth is not None:
             self.eth.stop()
@@ -1325,11 +1406,20 @@ def main():
     ap.add_argument('--screenshot', default=None)
     ap.add_argument('--set', action='append', default=[], help='테스트용 파라미터 (예: env.weather=rain)')
     ap.add_argument('--robot-stl', default=None, help='비콘 CAD(STL)로 로봇 모델 생성 후 시작')
+    ap.add_argument('--mode', choices=['dev', 'test'], default=None, help='시작 화면 없이 바로 이 모드로 시작')
+    ap.add_argument('--scenario', default=None, help='시나리오 YAML 불러오기 (--mode 와 함께)')
+    ap.add_argument('--home-tab', type=int, default=None, help='테스트용: 시작 화면 모드 선택 (0 개발 1 시험 2 회귀)')
     a = ap.parse_args()
     if a.robot_stl:
         from .robot_build import build
         build(a.robot_stl, writable_root(), True)
     app = App(hidden=a.hidden, ros=not a.no_ros)
+    if a.home_tab is not None:
+        app.mode_sel = ['dev', 'test', 'regress'][a.home_tab]
+    if a.scenario:
+        app.load_scenario_yaml(a.scenario)
+    if a.set and a.mode is None:
+        a.mode = 'dev'
     if a.set:
         if any(kv.startswith('scn.seed=') for kv in a.set):
             app.rand_scn = False
@@ -1339,6 +1429,8 @@ def main():
             obj = {'map': app.params, 'scn': app.sparams, 'traffic': app.tparams, 'env': app.eparams}[grp]
             cur = getattr(obj, name)
             setattr(obj, name, (v.lower() in ('1', 'true', 'yes')) if isinstance(cur, bool) else type(cur)(v))
+    if a.mode and app.robot_parts is not None:
+        app.mode = app.mode_sel = a.mode
         app.rebuild(map_too=True, sync=True)
     app.run(a.frames, a.screenshot, a.warmup)
 

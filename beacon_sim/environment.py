@@ -54,6 +54,7 @@ class Env:
     radar_snr_loss: float          # [dB]
     # 운전자 시인성
     visibility: float = 10000.0    # 기상학적 가시거리 [m] (≈ 3 × 대기 산란 거리)
+    seed: int = -1                 # 실제로 쓴 환경 시드 (재현용)
 
     def label(self):
         s = f'{TIME_KO[self.time_of_day]} / {WEATHER_KO[self.weather]}'
@@ -120,7 +121,7 @@ def resolve(ep: EnvParams, fallback_seed=0) -> Env:
     vis = 10000.0 if wx == 'clear' else float(min(10000.0, 3.0 * fog))
     return Env(tod, wx, k, tuple(map(float, sky)), float(sun), float(amb), float(fog), tuple(map(float, fog_col)),
                tod != 'day', tod != 'day' or wx in ('rain', 'fog', 'snow'), float(noise),
-               float(alpha), float(false_rate), float(wet), float(snr), vis)
+               float(alpha), float(false_rate), float(wet), float(snr), vis, int(seed))
 
 
 def notice_scale(env, beacon_light=True):

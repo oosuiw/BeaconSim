@@ -158,6 +158,10 @@ class Metrics:
         return r
 
 
+# 시계열 CSV 열 (Metrics.samples)
+COLS = ['t', 'x', 'y', 's', 't_lat', 'v', 'vehicles', 'noticed', 'lane_change', 'brake', 'scc_lock', 'crash',
+        'beacon_hit', 'damaged', 'gnss_status']
+
 # 기준 키 → (지표 키, 비교)
 CRITERIA = {
     'max_crashes': ('crashes', '<='), 'max_beacon_hits': ('beacon_hits', '<='),
@@ -197,3 +201,54 @@ def judge(result, criteria):
         rows.append((k, want, got, 'PASS' if st else 'FAIL'))
         ok &= bool(st)
     return rows, ok
+
+
+# GUI 표시용 이름 (순서 = 편집 화면 순서)
+CRITERIA_KO = {
+    'max_beacon_hits': '비콘 추돌 수 ≤', 'beacon_not_damaged': '비콘 파손 없음', 'max_beacon_contacts': '비콘 접촉 수 ≤',
+    'min_ttc_s': '비콘 차로 최소 TTC ≥ [s]', 'max_crashes': '전체 추돌 수 ≤', 'max_pass_speed_kph': '비콘 통과 속도 ≤ [km/h]',
+    'min_pass_clearance_m': '통과 횡간격 ≥ [m]', 'min_notice_dist_m': '운전자 인지 거리 ≥ [m]',
+    'min_scc_locks': 'SCC 인식 수 ≥', 'min_gnss_fix_ratio': 'GNSS FIX 비율 ≥', 'max_gnss_reconverge_s': 'GNSS 재수렴 ≤ [s]',
+    'max_loc_lat_rms_m': '측위 횡오차 RMS ≤ [m]', 'max_loc_lat_m': '측위 횡오차 최대 ≤ [m]',
+    'max_loc_lat_tunnel_m': '터널 측위 횡오차 최대 ≤ [m]', 'min_lane_precision': '차선검출 정밀도 ≥',
+    'min_lane_recall': '차선검출 재현율 ≥',
+}
+# 예시값 (계획서 6장: 합격 기준 미정 → 실차 요구사항에서 역산해 수정)
+DEFAULT_CRITERIA = {'max_beacon_hits': 0, 'beacon_not_damaged': True, 'max_beacon_contacts': 0, 'min_ttc_s': 2.0}
+CRITERIA_DEFAULT_VALUE = {
+    'max_beacon_hits': 0, 'beacon_not_damaged': True, 'max_beacon_contacts': 0, 'min_ttc_s': 2.0, 'max_crashes': 0,
+    'max_pass_speed_kph': 80.0, 'min_pass_clearance_m': 1.0, 'min_notice_dist_m': 100.0, 'min_scc_locks': 1,
+    'min_gnss_fix_ratio': 0.8, 'max_gnss_reconverge_s': 60.0, 'max_loc_lat_rms_m': 0.1, 'max_loc_lat_m': 0.3,
+    'max_loc_lat_tunnel_m': 0.3, 'min_lane_precision': 0.8, 'min_lane_recall': 0.8,
+}
+
+
+def subscribe_eval(node, met, eng, topics):
+    """측위(Odometry/PoseStamped/PoseWithCovarianceStamped)·차선검출(PointCloud2) 토픽 구독 → Metrics."""
+    subs = []
+    loc = (topics or {}).get('localization')
+    if loc:
+        from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+        from nav_msgs.msg import Odometry
+
+        def pose_of(m):
+            p = m.pose.pose if hasattr(m.pose, 'pose') else m.pose
+            q = p.orientation
+            yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+            met.add_localization(eng.t, p.position.x, p.position.y, yaw)
+        typ = {'odom': Odometry, 'pose': PoseStamped, 'pose_cov': PoseWithCovarianceStamped}[
+            topics.get('localization_type', 'odom')]
+        subs.append(node.create_subscription(typ, loc, pose_of, 10))
+    lane = (topics or {}).get('lane_detection')
+    if lane:
+        from sensor_msgs.msg import PointCloud2
+        from sensor_msgs_py import point_cloud2
+
+        def lane_cb(m):
+            gt = eng.latest.get('pandar40p', {}).get('gt')
+            if gt is None:
+                return
+            a = point_cloud2.read_points(m, field_names=['x', 'y'])
+            met.add_lane_detection(np.c_[a['x'], a['y']], gt)
+        subs.append(node.create_subscription(PointCloud2, lane, lane_cb, 5))
+    return subs

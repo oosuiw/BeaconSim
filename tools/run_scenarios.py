@@ -25,10 +25,7 @@ import yaml
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from beacon_sim.common import ROOT, load_yaml, resource, results_root  # noqa: E402
 from beacon_sim.engine import EngineThread, SimEngine  # noqa: E402
-from beacon_sim.evaluate import Metrics, judge  # noqa: E402
-
-COLS = ['t', 'x', 'y', 's', 't_lat', 'v', 'vehicles', 'noticed', 'lane_change', 'brake', 'scc_lock', 'crash',
-        'beacon_hit', 'damaged', 'gnss_status']
+from beacon_sim.evaluate import COLS, Metrics, judge, subscribe_eval  # noqa: E402
 
 
 def deep_merge(a, b):
@@ -73,7 +70,7 @@ def run_one(sc, base, robot, ros=None, log=print):
         node, bridge_cls, rclpy = ros
         bridge = bridge_cls(node, eng, cfg, markers=False)
         topics = sc.get('topics', {}) or {}
-        subs = _subscribe_eval(node, met, eng, topics)
+        subs = subscribe_eval(node, met, eng, topics)
         state = {'pending': {}}
 
         def on_step(e, fired, ev):
@@ -97,38 +94,6 @@ def run_one(sc, base, robot, ros=None, log=print):
     res['speedup'] = round(dur / max(res['wall_s'], 1e-3), 1)
     eng.close()
     return info, res, met.samples
-
-
-def _subscribe_eval(node, met, eng, topics):
-    """측위(Odometry/PoseStamped/PoseWithCovarianceStamped)·차선검출(PointCloud2) 토픽 구독."""
-    import math
-    subs = []
-    loc = topics.get('localization')
-    if loc:
-        from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-        from nav_msgs.msg import Odometry
-
-        def pose_of(m):
-            p = m.pose.pose if hasattr(m.pose, 'pose') else m.pose
-            q = p.orientation
-            yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
-            met.add_localization(eng.t, p.position.x, p.position.y, yaw)
-        typ = {'odom': Odometry, 'pose': PoseStamped, 'pose_cov': PoseWithCovarianceStamped}[topics.get('localization_type', 'odom')]
-        subs.append(node.create_subscription(typ, loc, pose_of, 10))
-    lane = topics.get('lane_detection')
-    if lane:
-        import numpy as np
-        from sensor_msgs.msg import PointCloud2
-        from sensor_msgs_py import point_cloud2
-
-        def lane_cb(m):
-            gt = eng.latest.get('pandar40p', {}).get('gt')
-            if gt is None:
-                return
-            a = point_cloud2.read_points(m, field_names=['x', 'y'])
-            met.add_lane_detection(np.c_[a['x'], a['y']], gt)
-        subs.append(node.create_subscription(PointCloud2, lane, lane_cb, 5))
-    return subs
 
 
 def fmt(v):
