@@ -187,7 +187,7 @@ class StartMixin:
         imgui.begin('start', None, imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move |
                     imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_bring_to_front_on_focus)
         imgui.pop_style_color()
-        cw = min(1240 * sc, W - 48 * sc)
+        cw = min(1320 * sc, W - 48 * sc)
         x0 = (W - cw) / 2
         imgui.set_cursor_pos(imgui.ImVec2(x0, 28 * sc))
         imgui.begin_group()
@@ -198,22 +198,22 @@ class StartMixin:
         imgui.text('BeaconSim')
         imgui.pop_font()
         imgui.same_line()
-        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 12)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 12 * sc)
         S.muted(f'v{GENERATOR_VERSION}  ·  세이프티 비콘 시뮬레이터  ·  모드를 고르고 조건을 정한 뒤 시작하세요')
         if self.prev_mode is not None:
             imgui.same_line(cw - 190 * sc)
             if imgui.button(f'{FA.ICON_FA_ARROW_LEFT}  {MODE_KO[self.prev_mode]} 화면으로 돌아가기'):
                 self.mode, self.prev_mode = self.prev_mode, None
                 self._resume()
-        imgui.dummy(imgui.ImVec2(0, 10))
+        imgui.dummy(imgui.ImVec2(0, 10 * sc))
         # 모드 카드
-        gap = 14
+        gap = 14 * sc
         card_w = (cw - 2 * gap) / 3
         for k, (key, ic, title, sub, desc, chips) in enumerate(MODES):
             if k:
                 imgui.same_line(spacing=gap)
-            self._mode_card(key, ic, title, sub, desc, chips, card_w, 150)
-        imgui.dummy(imgui.ImVec2(0, 8))
+            self._mode_card(key, ic, title, sub, desc, chips, card_w, 150 * sc)
+        imgui.dummy(imgui.ImVec2(0, 8 * sc))
         # 본문
         body_h = H - imgui.get_cursor_pos_y() - 24 * sc
         lw = cw * 0.64
@@ -238,7 +238,8 @@ class StartMixin:
         imgui.push_style_color(imgui.Col_.child_bg, S.v4(S.ACCENT, 0.10) if sel else S.v4(S.BG1))
         imgui.push_style_color(imgui.Col_.border, S.v4(S.ACCENT, 0.9) if sel else S.v4(S.BORDER))
         imgui.push_style_var(imgui.StyleVar_.child_border_size, 2.0 if sel else 1.0)
-        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(16, 14))
+        sc = self.scale
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(16 * sc, 14 * sc))
         imgui.begin_child(f'mode_{key}', imgui.ImVec2(w, h), imgui.ChildFlags_.borders |
                           imgui.ChildFlags_.always_use_window_padding, imgui.WindowFlags_.no_scrollbar)
         hovered = imgui.is_window_hovered()
@@ -246,15 +247,15 @@ class StartMixin:
         imgui.text_colored(S.v4(S.ACCENT if sel else (S.TEXT if hovered else S.MUTED)), f'{ic}  {title}')
         imgui.pop_font()
         imgui.same_line()
-        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 5)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 5 * sc)
         S.muted(sub)
-        imgui.push_text_wrap_pos(w - 16)
+        imgui.push_text_wrap_pos(w - 16 * sc)
         imgui.text_wrapped(desc)
         imgui.pop_text_wrap_pos()
-        imgui.set_cursor_pos_y(h - 40)
+        imgui.set_cursor_pos_y(h - 40 * sc)
         for i, c in enumerate(chips):
             if i:
-                imgui.same_line(spacing=4)
+                imgui.same_line(spacing=4 * sc)
             S.chip(c, S.ACCENT if sel else S.MUTED)
         imgui.set_cursor_pos(imgui.ImVec2(0, 0))
         if imgui.invisible_button('hit', imgui.ImVec2(w, h)) and not sel:
@@ -544,7 +545,7 @@ class StartMixin:
                            f'{"PASS" if r["ok"] else "FAIL"}')
         imgui.pop_font()
         imgui.same_line()
-        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 8)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 8 * self.scale)
         S.muted(f'{r["scenario"]["name"]} · {r["reason"]} · {m["sim_time_s"]} s'
                 + ('' if r['complete'] else ' · 시험 시간 전 종료 (참고용)'))
         imgui.spacing()

@@ -224,9 +224,13 @@ class App(StartMixin):
         io = imgui.get_io()
         os.makedirs(CONFIG_DIR, exist_ok=True)
         io.set_ini_filename(os.path.join(CONFIG_DIR, 'imgui.ini'))
-        self.scale = max(glfw.get_window_content_scale(self.win)[0], 1.0)
-        self.font_path = S.load_fonts(self.scale)
-        S.apply_theme(self.scale)
+        # UI 배율 = 모니터 배율(content scale) × 창 크기 배율(자동, 1700×1000 기준) 또는 사용자 지정
+        self.dpi = max(glfw.get_window_content_scale(self.win)[0], 1.0)
+        self.font_path = S.load_fonts(1.0)
+        S.apply_theme(1.0)
+        self.ui_zoom_user = 0.0            # 0 = 자동
+        self.scale = 0.0
+        self._update_zoom()
         self.gui = ImguiRenderer(self.ctx)
         self.input = GlfwInput(self.win, self._on_drag, self._on_scroll, self._on_key)
         self.ov = OverlayRenderer(self.ctx)
@@ -256,6 +260,7 @@ class App(StartMixin):
         self.regress_sel, self.regress_ros = {}, False
         self.start_tab = 0
         self.export_pcd = True
+        self.ui_zoom_user = float(st_.get('ui_zoom', 0.0) or 0.0)
         self.show = dict(terrain=True, tunnel=True, lanelet=False, vehicles=True, robot=True, markers=True,
                          pandar=True, tele=True, radar=True, gnss=True, scc=True, camera=True, env_view=True)
         self.pandar_color = 0              # 0 세기, 1 정답 라벨
@@ -286,6 +291,23 @@ class App(StartMixin):
             self._load_robot()
         else:
             self.log('로봇 모델이 없습니다. 비콘 CAD(STL)를 선택하세요.')
+
+    def _update_zoom(self):
+        """창 크기에 맞춰 UI 배율 조정 (세로 1000, 가로 1700 논리 픽셀 기준, 0.05 단위)."""
+        w, h = glfw.get_window_size(self.win)
+        if self.ui_zoom_user > 0:
+            z = self.ui_zoom_user
+        else:
+            z = min(h / 1000.0, w / 1700.0) if w > 0 and h > 0 else 1.0
+            z = float(np.clip(round(z / 0.05) * 0.05, 0.75, 3.0))
+        s = z * self.dpi
+        if (w, h) != getattr(self, '_win_size', None):
+            self._win_size = (w, h)
+            self._cam_reset = True             # 창 크기 바뀌면 카메라 창을 오른쪽 아래로 다시 배치
+        if abs(s - self.scale) > 1e-3:
+            self._cam_reset = True
+            self.scale = s
+            S.set_zoom(s)
 
     # ------------------------------------------------------------ 로봇 모델 (첫 실행)
     def _load_robot(self):
@@ -349,7 +371,7 @@ class App(StartMixin):
                              ('env', EnvParams)]:
                 if key in d:
                     out[key] = pick(cls, d[key])
-            for k in ('export_dir', 'rand_map', 'rand_scn', 'mode', 'test'):
+            for k in ('export_dir', 'rand_map', 'rand_scn', 'mode', 'test', 'ui_zoom'):
                 if k in d:
                     out[k] = d[k]
         except Exception:           # noqa: BLE001
@@ -361,7 +383,7 @@ class App(StartMixin):
             json.dump({'params': self.params.to_dict(), 'scenario': self.sparams.to_dict(),
                        'traffic': self.tparams.to_dict(), 'env': self.eparams.to_dict(),
                        'export_dir': self.export_dir, 'rand_map': self.rand_map, 'rand_scn': self.rand_scn,
-                       'mode': self.mode_sel, 'test': self.test},
+                       'mode': self.mode_sel, 'test': self.test, 'ui_zoom': self.ui_zoom_user},
                       f, indent=1)
 
     # ------------------------------------------------------------ 빌드 (맵/시나리오/엔진)
@@ -583,16 +605,16 @@ class App(StartMixin):
         imgui.begin('sidebar', None, imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move |
                     imgui.WindowFlags_.no_bring_to_front_on_focus)
         # 헤더
-        imgui.push_font(S.Fonts.bold, 22 * self.scale / max(self.scale, 1))
+        imgui.push_font(S.Fonts.bold, 22)
         imgui.text_colored(S.v4(S.ACCENT), FA.ICON_FA_TOWER_BROADCAST)
         imgui.same_line()
         imgui.text('BeaconSim')
         imgui.pop_font()
         imgui.same_line()
-        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 6)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 6 * self.scale)
         S.muted(f'v{GENERATOR_VERSION}')
         imgui.same_line()
-        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - 3)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - 3 * self.scale)
         S.chip(MODE_KO.get(self.mode, ''), S.WARN if self.mode == 'test' else S.ACCENT,
                FA.ICON_FA_CLIPBOARD_CHECK if self.mode == 'test' else FA.ICON_FA_SCREWDRIVER_WRENCH)
         imgui.same_line(pw - 50 * self.scale)
@@ -610,15 +632,15 @@ class App(StartMixin):
         if self.mode == 'test':
             tabs[5] = (FA.ICON_FA_CLIPBOARD_CHECK, '시험', self._tab_test)
         # 아이콘 탭 (2줄 x 3)
-        bw = (pw - 28 * self.scale - 2 * 6) / 3
+        bw = (pw - 28 * self.scale - 2 * 6 * self.scale) / 3
         for k, (ic, label, _) in enumerate(tabs):
             if k % 3:
-                imgui.same_line(spacing=6)
+                imgui.same_line(spacing=6 * self.scale)
             sel = self.tab == k
             imgui.push_style_color(imgui.Col_.button, S.v4(S.ACCENT, 0.18) if sel else S.v4(S.BG1))
             imgui.push_style_color(imgui.Col_.button_hovered, S.v4(S.ACCENT, 0.28) if sel else S.v4(S.BG3))
             imgui.push_style_color(imgui.Col_.text, S.v4(S.ACCENT) if sel else S.v4(S.MUTED))
-            if imgui.button(f'{ic}  {label}', imgui.ImVec2(bw, 34 * self.scale / max(self.scale, 1))):
+            if imgui.button(f'{ic}  {label}', imgui.ImVec2(bw, 34 * self.scale)):
                 self.tab = k
             imgui.pop_style_color(3)
         imgui.spacing()
@@ -671,11 +693,11 @@ class App(StartMixin):
         imgui.set_next_window_pos(imgui.ImVec2(cx, 12), imgui.Cond_.always, imgui.ImVec2(0.5, 0))
         imgui.set_next_window_bg_alpha(0.88)
         imgui.push_style_var(imgui.StyleVar_.window_rounding, 14.0 * self.scale)
-        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(14, 8))
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(14 * self.scale, 8 * self.scale))
         imgui.begin('playbar', None, imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.always_auto_resize |
                     imgui.WindowFlags_.no_move | imgui.WindowFlags_.no_saved_settings)
         busy = self.build_future is not None and not self.build_future.done()
-        if S.primary_button(FA.ICON_FA_PLAY if self.paused else FA.ICON_FA_PAUSE, imgui.ImVec2(36, 0)):
+        if S.primary_button(FA.ICON_FA_PLAY if self.paused else FA.ICON_FA_PAUSE, imgui.ImVec2(36 * self.scale, 0)):
             self._toggle_pause()
         S.tip('재생 / 일시정지 (Space)')
         imgui.same_line()
@@ -746,7 +768,7 @@ class App(StartMixin):
                          ('Space', '일시정지 / 재생'), ('R', '시나리오 재시작'), ('G', '맵 재생성'), ('F1', '도움말')]:
                 S.chip(k, S.ACCENT)
                 imgui.same_line(150 * self.scale)
-                imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 3)
+                imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 3 * self.scale)
                 imgui.text(v)
             imgui.spacing()
             S.muted('주황 기둥 = 사고 현장,  비콘 위 짧은 선 = GNSS 위치 (색 = RTK 상태)')
@@ -889,11 +911,11 @@ class App(StartMixin):
         S.section(FA.ICON_FA_CLOUD_SUN_RAIN, '시간대 · 날씨', S.TEAL)
         times = ['random', 'day', 'dusk', 'night']
         k = times.index(e.time_of_day) if e.time_of_day in times else 0
-        k = S.segmented(['랜덤', '낮', '황혼', '밤'], k, 72 * self.scale / max(self.scale, 1))
+        k = S.segmented(['랜덤', '낮', '황혼', '밤'], k, 72 * self.scale)
         e.time_of_day = times[k]
         wxs = ['random', 'clear', 'rain', 'fog', 'snow']
         k = wxs.index(e.weather) if e.weather in wxs else 0
-        k = S.segmented(['랜덤', '맑음', '비', '안개', '눈'], k, 57 * self.scale / max(self.scale, 1))
+        k = S.segmented(['랜덤', '맑음', '비', '안개', '눈'], k, 57 * self.scale)
         e.weather = wxs[k]
         rnd = e.intensity < 0
         ch, rnd = imgui.checkbox('강도 랜덤', rnd)
@@ -935,6 +957,17 @@ class App(StartMixin):
         ch, self.show['env_view'] = imgui.checkbox('3D 뷰에도 밤·날씨 적용', self.show['env_view'])
         if ch and self.engine is not None:
             self.renderer.set_env(self.engine.env if self.show['env_view'] else None)
+        S.end_card()
+        S.begin_card('v_ui')
+        S.section(FA.ICON_FA_SLIDERS, 'UI 크기')
+        auto = self.ui_zoom_user <= 0
+        ch, auto = imgui.checkbox('창 크기에 맞춤 (자동)', auto)
+        if ch:
+            self.ui_zoom_user = 0.0 if auto else round(self.scale / self.dpi, 2)
+        if not auto:
+            _, self.ui_zoom_user = imgui.slider_float('배율', self.ui_zoom_user, 0.75, 2.5, '%.2fx')
+        else:
+            S.muted(f'현재 {self.scale / self.dpi:.2f}x')
         S.end_card()
         S.begin_card('v_cam')
         S.section(FA.ICON_FA_VIDEO, '시점')
@@ -986,7 +1019,7 @@ class App(StartMixin):
     # ---- 오른쪽 상황판
     def _dashboard(self, snap, W):
         dw = 300 * self.scale
-        imgui.set_next_window_pos(imgui.ImVec2(W - dw - 12, 64 * self.scale))
+        imgui.set_next_window_pos(imgui.ImVec2(W - dw - 12 * self.scale, 64 * self.scale))
         imgui.set_next_window_size(imgui.ImVec2(dw, 0))
         imgui.set_next_window_bg_alpha(0.0)
         imgui.begin('dash', None, imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move |
@@ -1108,18 +1141,25 @@ class App(StartMixin):
     def _camera_window(self, W, H):
         cw = 520 * self.scale
         chh = cw * self.camera.H / self.camera.W
-        imgui.set_next_window_pos(imgui.ImVec2(W - cw - 24, H - chh - 70), imgui.Cond_.first_use_ever)
-        imgui.set_next_window_size(imgui.ImVec2(cw + 20, chh + 58), imgui.Cond_.first_use_ever)
-        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(10, 8))
+        sc = self.scale
+        cond = imgui.Cond_.always if getattr(self, '_cam_reset', True) else imgui.Cond_.first_use_ever
+        self._cam_reset = False
+        imgui.set_next_window_pos(imgui.ImVec2(W - cw - 34 * sc, H - chh - 80 * sc), cond)
+        imgui.set_next_window_size(imgui.ImVec2(cw + 20 * sc, chh + 58 * sc), cond)
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(10 * self.scale, 8 * self.scale))
         imgui.push_style_color(imgui.Col_.window_bg, S.v4(S.BG1, 0.95))
         opened, self.show['camera'] = imgui.begin(f'{FA.ICON_FA_CAMERA}  카메라###cam', self.show['camera'],
                                                   imgui.WindowFlags_.no_collapse | imgui.WindowFlags_.no_title_bar)
+        wp = imgui.get_window_pos()
+        sw = getattr(self, 'sidebar_w', 0) + 8 * sc
+        if wp.x < sw:                                  # 사이드바를 가리지 않게
+            imgui.set_window_pos(imgui.ImVec2(sw, wp.y))
         if opened:
             S.chip('Arducam B0495', S.ACCENT, FA.ICON_FA_CAMERA)
             imgui.same_line()
             S.chip(f'{self.camera.W}×{self.camera.H} · {self.base_cfg["camera"]["rate_hz"]:.0f} Hz · '
                    f'HFOV {self.camera.hfov:.0f}°', S.MUTED)
-            imgui.same_line(imgui.get_window_width() - 34)
+            imgui.same_line(imgui.get_window_width() - 34 * self.scale)
             if imgui.small_button(FA.ICON_FA_XMARK):
                 self.show['camera'] = False
             w = imgui.get_content_region_avail().x
@@ -1321,6 +1361,7 @@ class App(StartMixin):
                 self.cam['target'] = snap['T_wb'][:3, 3] + np.array([0, 0, 0.5])
             self._update_camera_sensor(snap)
 
+        self._update_zoom()
         self.input.new_frame(dt)
         imgui.new_frame()
         fw, fh = glfw.get_framebuffer_size(self.win)
@@ -1400,6 +1441,7 @@ class App(StartMixin):
 def main():
     ap = argparse.ArgumentParser(description='BeaconSim 세이프티 비콘 시뮬레이터')
     ap.add_argument('--hidden', action='store_true', help='창을 띄우지 않음 (테스트용)')
+    ap.add_argument('--size', default='1700x1000', help='창 크기 (예: 3440x1400)')
     ap.add_argument('--no-ros', action='store_true', help='ROS2 연동 끄기')
     ap.add_argument('--frames', type=int, default=None)
     ap.add_argument('--warmup', type=float, default=0.0, help='스크린샷 전 대기 [s]')
@@ -1413,7 +1455,8 @@ def main():
     if a.robot_stl:
         from .robot_build import build
         build(a.robot_stl, writable_root(), True)
-    app = App(hidden=a.hidden, ros=not a.no_ros)
+    w_, h_ = (int(v) for v in a.size.lower().split('x'))
+    app = App(w_, h_, hidden=a.hidden, ros=not a.no_ros)
     if a.home_tab is not None:
         app.mode_sel = ['dev', 'test', 'regress'][a.home_tab]
     if a.scenario:

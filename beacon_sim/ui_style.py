@@ -96,6 +96,38 @@ def load_fonts(scale=1.0):
     return '(기본 폰트)'
 
 
+ZOOM = 1.0          # 현재 UI 배율 (창 크기 · 모니터 배율에 따라 set_zoom 으로 바뀜)
+_BASE = None
+_NO_SCALE = {'alpha', 'disabled_alpha', 'font_scale_main', 'font_scale_dpi', 'font_size_base', 'mouse_cursor_scale',
+             'curve_tessellation_max_error', 'circle_tessellation_max_error', 'hover_delay_normal', 'hover_delay_short',
+             'hover_stationary_delay', 'log_slider_deadzone', 'table_angled_headers_angle'}
+
+
+def set_zoom(z):
+    """UI 전체 배율: 기본 크기(apply_theme 직후 값)에서 다시 계산하므로 여러 번 불러도 누적되지 않는다."""
+    global _BASE, ZOOM
+    st = imgui.get_style()
+    if _BASE is None:
+        _BASE = {}
+        for n in dir(st):
+            if n.startswith('_') or n in _NO_SCALE or 'align' in n:
+                continue
+            v = getattr(st, n)
+            if isinstance(v, float):
+                _BASE[n] = v
+            elif isinstance(v, imgui.ImVec2):
+                _BASE[n] = (v.x, v.y)
+    for n, v in _BASE.items():
+        setattr(st, n, imgui.ImVec2(*v) if isinstance(v, tuple) else v)
+    st.scale_all_sizes(z)
+    st.font_scale_main = z
+    ZOOM = z
+
+
+def px(v):
+    return v * ZOOM
+
+
 def apply_theme(scale=1.0):
     st = imgui.get_style()
     st.window_rounding, st.child_rounding, st.frame_rounding = 10.0, 8.0, 6.0
@@ -150,7 +182,7 @@ def chip(text, color=ACCENT, icon=None, filled=False):
     label = f'{icon}  {text}' if icon else text
     sz = imgui.calc_text_size(label)
     p = imgui.get_cursor_screen_pos()
-    padx, pady = 9, 3
+    padx, pady = px(9), px(3)
     dl = imgui.get_window_draw_list()
     dl.add_rect_filled(p, imgui.ImVec2(p.x + sz.x + 2 * padx, p.y + sz.y + 2 * pady),
                        u32(color, 0.9 if filled else 0.16), 999.0)
@@ -174,7 +206,7 @@ def kpi(label, value, color=TEXT, width=None):
 
 def begin_card(cid, height=0.0):
     imgui.push_style_color(imgui.Col_.child_bg, v4(BG1))
-    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(12, 10))
+    imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(px(12), px(10)))
     flags = imgui.ChildFlags_.always_use_window_padding
     if height == 0.0:
         flags |= imgui.ChildFlags_.auto_resize_y
@@ -215,7 +247,7 @@ def primary_button(label, size=None, color=ACCENT):
 def segmented(items, current, width=None):
     """세그먼트 선택 (가로 버튼 묶음). 반환: 선택 인덱스."""
     out = current
-    imgui.push_style_var(imgui.StyleVar_.item_spacing, imgui.ImVec2(2, 0))
+    imgui.push_style_var(imgui.StyleVar_.item_spacing, imgui.ImVec2(px(2), 0))
     for i, it in enumerate(items):
         if i:
             imgui.same_line()
@@ -232,10 +264,10 @@ def segmented(items, current, width=None):
 def pill_label(dl, x, y, text, color):
     """3D 이름표: 색 점 + 어두운 알약."""
     sz = imgui.calc_text_size(text)
-    w, h = sz.x + 26, sz.y + 8
+    w, h = sz.x + px(26), sz.y + px(8)
     x0, y0 = x - w / 2, y - h
     dl.add_rect_filled(imgui.ImVec2(x0, y0), imgui.ImVec2(x0 + w, y0 + h), u32(BG0, 0.82), 999.0)
     dl.add_rect(imgui.ImVec2(x0, y0), imgui.ImVec2(x0 + w, y0 + h), u32(color, 0.55), 999.0, 1.0)
-    dl.add_circle_filled(imgui.ImVec2(x0 + 11, y0 + h / 2), 4.0, u32(color))
-    dl.add_text(imgui.ImVec2(x0 + 19, y0 + 4), u32(TEXT), text)
-    dl.add_line(imgui.ImVec2(x, y0 + h), imgui.ImVec2(x, y + 6), u32(color, 0.6), 1.0)
+    dl.add_circle_filled(imgui.ImVec2(x0 + px(11), y0 + h / 2), px(4.0), u32(color))
+    dl.add_text(imgui.ImVec2(x0 + px(19), y0 + px(4)), u32(TEXT), text)
+    dl.add_line(imgui.ImVec2(x, y0 + h), imgui.ImVec2(x, y + px(6)), u32(color, 0.6), px(1.0))
