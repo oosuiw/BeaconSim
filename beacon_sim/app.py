@@ -144,7 +144,11 @@ class RosLink:
             import rclpy
             from rclpy.node import Node
             self.rclpy = rclpy
-            rclpy.init()
+            try:            # Ctrl+C 는 앱이 직접 처리 (rclpy 가 먼저 컨텍스트를 끄면 엔진 스레드 발행이 실패)
+                from rclpy.signals import SignalHandlerOptions
+                rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+            except ImportError:
+                rclpy.init()
             self.node = Node('beacon_sim_app')
             self.ok = True
         except Exception as e:        # noqa: BLE001
@@ -1506,6 +1510,15 @@ class App(StartMixin):
         self.gui.render(imgui.get_draw_data())
 
     def run(self, frames=None, screenshot=None, warmup=0.0):
+        import signal
+        for sig in (signal.SIGINT, signal.SIGTERM):      # Ctrl+C / kill → 창 닫기와 같은 정상 종료
+            signal.signal(sig, lambda *_: glfw.set_window_should_close(self.win, True))
+        try:
+            self._run(frames, screenshot, warmup)
+        finally:
+            self.close()
+
+    def _run(self, frames=None, screenshot=None, warmup=0.0):
         last = time.perf_counter()
         n = 0
         if screenshot:
@@ -1529,19 +1542,27 @@ class App(StartMixin):
             glfw.swap_buffers(self.win)
             if frames and not screenshot and n >= frames:
                 break
-        self.close()
 
     def close(self):
+        """종료 순서: 엔진 스레드 정지 → 시험 결과 저장 → 하위 프로세스(회귀·Godot) → RGL → ROS."""
+        if getattr(self, '_closed', False):
+            return
+        self._closed = True
+        if self.eth is not None:
+            self.eth.stop()
         if self.session is not None and not self.session.done:
             self._finish_test('프로그램 종료', show=False)
         if self.regress is not None:
             self.regress.stop()
+        if self.godot_future is not None:                  # 시작 중인 Godot 도 기다렸다가 닫기
+            try:
+                self.godot_future.result(timeout=30)[1].close()
+            except Exception:      # noqa: BLE001
+                pass
         if self.godot is not None:
             self.godot.close()
             self.godot = None
         self._save_settings()
-        if self.eth is not None:
-            self.eth.stop()
         if self.engine is not None:
             self.engine.close()
         if self.ros is not None:

@@ -396,7 +396,14 @@ class EngineThread(threading.Thread):
                 self.wall_t0, self.sim_t0 = now, e.t
             fired, ev = e.step()
             if self.on_step is not None:
-                self.on_step(e, fired, ev)
+                try:
+                    self.on_step(e, fired, ev)
+                except Exception as ex:    # noqa: BLE001  종료 중 ROS 발행 실패 등 → 스레드는 계속/정상 종료
+                    if not self.running:
+                        break
+                    if not getattr(self, '_warned', False):
+                        self._warned = True
+                        print(f'[EngineThread] on_step 오류: {ex}', flush=True)
             if now - last_meas[0] > 1.0:
                 self.measured_rtf = (e.t - last_meas[1]) / (now - last_meas[0])
                 last_meas = (now, e.t)
