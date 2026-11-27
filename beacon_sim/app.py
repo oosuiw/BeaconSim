@@ -1153,7 +1153,8 @@ class App(StartMixin):
                 self._deliver_camera(img, t)
         need_ros = self.ros is not None and self.ros.ok
         if (self.show['camera'] or need_ros) and snap['t'] >= self.cam_next_t:
-            if g.request(snap['t'], snap['T_wb'], snap['traffic_T'], snap['active'], mast_q=snap.get('mast_q')):
+            if g.request(snap['t'], snap['T_wb'], snap['traffic_T'], snap['active'], mast_q=snap.get('mast_q'),
+                         lamp=snap.get('lamp'), art=snap.get('trailer_art')):
                 self.cam_next_t = snap['t'] + 1.0 / self.base_cfg['camera']['rate_hz']
 
     def _deliver_camera(self, img, t):

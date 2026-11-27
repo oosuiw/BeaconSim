@@ -106,8 +106,11 @@ class Glb:
                                                            'indices': a0 + 2, 'material': self.material(mat_name, color)}]})
         return len(self.meshes) - 1
 
-    def node(self, name, mesh=None, children=None):
+    def node(self, name, mesh=None, children=None, translation=None):
+        """translation: map(ROS) 좌표 [x, y, z] → Godot 로 바꿔 넣음"""
         nd = {'name': name}
+        if translation is not None:
+            nd['translation'] = [float(x) for x in C @ np.asarray(translation, float)]
         if mesh is not None:
             nd['mesh'] = mesh
         if children:
@@ -130,7 +133,19 @@ class Glb:
 
 
 def _vkey(spec):
-    return f'{spec.kind}_{spec.length:.2f}_{spec.width:.2f}_{spec.height:.2f}'
+    return f'{spec.kind}_{spec.model}_{spec.variant}_{spec.length:.2f}_{spec.width:.2f}_{spec.height:.2f}'
+
+
+def _tail_z(sp):
+    """후미등 높이 (야간 뒤 노면 붉은 반사광 위치)"""
+    if not sp.model:
+        return 0.7
+    from . import vehicles
+    L = vehicles.trailer(sp.model)
+    if L is not None:
+        return 0.9
+    t = vehicles.build(sp.model, sp.variant)[1]['tail']
+    return 0.5 * (t[0] + t[1])
 
 
 def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy, static_path=None, static_id=None):
@@ -181,26 +196,59 @@ def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy, static_path=None, static_id=
         os.replace(tmp, static_path)
     g = Glb()
     roots = []
-    # 차량 원형 (차체 + 전조등 + 후미등), 로컬 좌표 → Godot 기저
+    # 차량 원형 (차체 + 부품 + 등화), 로컬 좌표 → Godot 기저. 세미 트레일러는 자식 'trailer' 노드(킹핀 위치)가 꺾인다
+    from . import vehicles
     protos, proto_idx = [], {}
     specs = list(eng.traffic.specs) + [sp for sp, _ in eng.accident]
+
+    def part_nodes(pi, parts, model, pre=''):
+        body, kids = None, []
+        for v, f, tag in parts:
+            if tag == 'body' and body is None and not pre:
+                body = g.mesh(f'veh_{pi}', v @ C.T, f, 'vehicle', (0.6, 0.6, 0.6))
+                continue
+            col = vehicles.MODELS[model].cargo_color if tag == 'cargo' else (0.1, 0.1, 0.1)
+            kids.append(g.node(f'part_{tag}', g.mesh(f'veh_{pi}_{pre}{tag}', v @ C.T, f,
+                                                     f'veh_{tag}_{model}' if tag == 'cargo' else f'veh_{tag}', col)))
+        return body, kids
+
+    def lamp_nodes(pi, lamps, pre=''):
+        return [g.node(f'lamp_{kind}_{j}', g.mesh(f'lamp_{pi}_{pre}{j}', lv @ C.T, lf, f'lamp_{kind}', col))
+                for j, (lv, lf, col, kind) in enumerate(lamps)]
+
     for sp in specs:
         k = _vkey(sp)
         if k in proto_idx:
             continue
-        proto_idx[k] = len(protos)
-        v, f = scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height)
-        body = g.mesh(f'veh_{proto_idx[k]}', v @ C.T, f, 'vehicle', (0.6, 0.6, 0.6))
-        kids = []
-        for j, (lv, lf, col) in enumerate(scene.vehicle_lamps(sp.kind, sp.length, sp.width, sp.height)):
-            kind = 'head' if col[2] > 0.5 else 'tail'
-            kids.append(g.node(f'lamp_{kind}_{j}', g.mesh(f'lamp_{proto_idx[k]}_{j}', lv @ C.T, lf, f'lamp_{kind}', col)))
-        roots.append(g.node(f'proto_{proto_idx[k]}', body, kids))
-        protos.append({'key': k, 'kind': sp.kind, 'length': sp.length, 'width': sp.width, 'height': sp.height})
+        pi = proto_idx[k] = len(protos)
+        head_z, hitch = 0.7, None
+        if sp.model:                            # 차종별 부품: 차체(도색) + 유리·타이어·휠·검은 플라스틱·적재함·적재물
+            parts, _ = vehicles.build(sp.model, sp.variant)
+            body, kids = part_nodes(pi, parts, sp.model)
+            kids += lamp_nodes(pi, vehicles.lamps(sp.model, sp.variant, kinds=True))
+            head_z = vehicles.head_z(sp.model)
+            tr = vehicles.trailer(sp.model)
+            if tr is not None:                  # 트레일러: 킹핀 위치 노드 아래 (Godot 에서 y 축 회전 = 꺾임)
+                _, tk = part_nodes(pi, tr['parts'], sp.model, 'tr_')
+                tk += lamp_nodes(pi, tr['lamps'], 'tr_')
+                hitch = float(tr['hitch_x'])
+                kids.append(g.node('trailer', None, tk, translation=[hitch, 0.0, 0.0]))
+        else:
+            v, f = scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height)
+            body = g.mesh(f'veh_{pi}', v @ C.T, f, 'vehicle', (0.6, 0.6, 0.6))
+            kids = lamp_nodes(pi, [(lv, lf, col, 'head' if col[2] > 0.5 else 'tail')
+                                   for lv, lf, col in scene.vehicle_lamps(sp.kind, sp.length, sp.width, sp.height)])
+        roots.append(g.node(f'proto_{pi}', body, kids))
+        protos.append({'key': k, 'kind': sp.kind, 'model': sp.model, 'length': sp.length, 'width': sp.width,
+                       'height': sp.height, 'head_z': round(float(head_z), 3), 'hitch': hitch,
+                       'tail_z': round(float(_tail_z(sp)), 3),
+                       'cargo_color': list(vehicles.MODELS[sp.model].cargo_color) if sp.model else None})
     vglb = os.path.join(out_dir, 'vehicles.glb')
     g.write(vglb, roots)
     # 광원: 가로등(야간), 터널등(항상)
-    street = [to_g(p, origin).round(3).tolist() for p in scene.street_lights(m)]
+    sl_P, sl_s = scene.street_lights(m, with_s=True)
+    street = [to_g(p, origin).round(3).tolist() for p in sl_P]
+    street_on = scene.street_lights_on(m, sl_s, eng.env, int(eng.scn.sp.seed)).tolist()
     tunnel = []
     for a, b in m.tunnels:
         for s in np.arange(a + 6.0, b - 3.0, 12.0):
@@ -216,12 +264,17 @@ def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy, static_path=None, static_id=
         'protos': protos,
         'slots': [proto_idx[_vkey(sp)] for sp in eng.traffic.specs],
         'slot_colors': [list(map(float, sp.color)) for sp in eng.traffic.specs],
-        'accident': [{'proto': proto_idx[_vkey(sp)], 'color': list(map(float, sp.color)), 'T': xform_g(T, origin)}
-                     for sp, T in eng.accident],
-        'street_lights': street, 'tunnel_lights': tunnel,
+        'slot_style': [[int(sp.rim), float(sp.tint)] for sp in eng.traffic.specs],          # 휠 색 번호, 선팅 밝기
+        'rims': [list(c) for c in vehicles.RIMS],
+        'accident': [{'proto': proto_idx[_vkey(sp)], 'color': list(map(float, sp.color)), 'T': xform_g(T, origin),
+                      'style': [int(sp.rim), float(sp.tint)],
+                      'ped': sp.kind == 'pedestrian'} for sp, T in eng.accident],
+        'street_lights': street, 'street_on': street_on, 'tunnel_lights': tunnel,
+        'beacon_lights': beacon_lights_g(eng),
         'env': {'time_of_day': env.time_of_day, 'weather': env.weather, 'intensity': env.intensity,
                 'visibility': env.visibility, 'fog_dist': env.fog_dist, 'wet': env.wet,
-                'street_lights': env.street_lights, 'lamps': env.lamps},
+                'street_lights': env.street_lights, 'lamps': env.lamps, 'moon': env.moon, 'sky_glow': env.sky_glow,
+                'ambient': env.ambient},
     }
     js = os.path.join(out_dir, 'scene.json')
     with open(js, 'w') as fh:
@@ -324,16 +377,19 @@ class GodotLink:
                 return msg
         raise TimeoutError(f'Godot 응답 없음 ({what})')
 
-    def _state(self, eng_t, T_wb, traffic_T, active, mast_q=None):
+    def _state(self, eng_t, T_wb, traffic_T, active, mast_q=None, lamp=None, art=None):
         self.seq += 1
-        veh = [[int(i)] + xform_g(traffic_T[i], self.origin) for i in np.nonzero(active)[0]]
+        act = np.nonzero(active)[0]
+        veh = [[int(i)] + xform_g(traffic_T[i], self.origin) for i in act]
         T_b_opt, links = self.T_b_opt, {}
         if self.kin is not None and mast_q is not None:      # 접이식 센서타워: 카메라·부품이 각도를 따라감
             T_b_opt = self.kin.mount('camera', mast_q)[1] @ T_CAMLINK_OPTICAL
             links = robot_links_g(self.kin, mast_q)
         return {'type': 'state', 'seq': self.seq, 't': round(float(eng_t), 3),
                 'cam': xform_g(T_wb @ T_b_opt, self.origin, cam=True),
-                'robot': xform_g(T_wb, self.origin), 'links': links, 'veh': veh}
+                'robot': xform_g(T_wb, self.origin), 'links': links, 'veh': veh,
+                'lamp': [int(x) for x in lamp[act]] if lamp is not None else [],
+                'art': [round(float(x), 4) for x in art[act]] if art is not None else []}
 
     def _send(self, msg):
         data = json.dumps(msg, separators=(',', ':')).encode()
@@ -343,7 +399,9 @@ class GodotLink:
 
     def send_state(self, eng, T_wb, traffic_T, active, capture=None):
         """비교 도구용: capture 경로가 있으면 PNG 저장까지 기다린다."""
-        msg = self._state(eng.t, T_wb, traffic_T, active, getattr(eng, 'mast_q', None))
+        tr = getattr(eng, 'traffic', None)
+        msg = self._state(eng.t, T_wb, traffic_T, active, getattr(eng, 'mast_q', None),
+                          tr.lamp_bits(eng.t) if tr is not None else None, tr.trailer_angle() if tr is not None else None)
         if capture:
             msg['capture'] = capture
         self._send(msg)
@@ -351,11 +409,11 @@ class GodotLink:
             return self._wait('captured', 30)
 
     # ---- 스트리밍 (GUI·ROS 카메라)
-    def request(self, t, T_wb, traffic_T, active, settle=2, mast_q=None):
+    def request(self, t, T_wb, traffic_T, active, settle=2, mast_q=None, lamp=None, art=None):
         """캡처 요청 (응답을 기다리지 않음). 이전 요청이 아직이면 False."""
         if self.pending is not None and time.time() - self.pending[1] < 2.0:
             return False
-        msg = self._state(t, T_wb, traffic_T, active, mast_q)
+        msg = self._state(t, T_wb, traffic_T, active, mast_q, lamp, art)
         msg.update(capture=self.raw_path, raw=True, settle=settle)
         self._send(msg)
         self.pending = (self.seq, time.time(), t)
@@ -397,6 +455,33 @@ class GodotLink:
             os.remove(self.raw_path)
         except OSError:
             pass
+
+
+def beacon_lights_g(eng):
+    """비콘 조명 → Godot: 붙을 링크 노드, 링크 로컬 위치·빛 방향(Godot 축), 세기 등."""
+    from .robot_model import rot
+    kin, bl = eng.kin, eng.cfg.get('beacon_lights', {})
+    out = []
+    for name, (_parent, T, s) in kin.lights.items():
+        kind = 'search' if name == 'searchlight' else 'red' if 'red' in name else 'blue' if 'blue' in name else None
+        if kind is None:
+            continue
+        R = T[:3, :3]
+        tilt = bl.get('searchlight', {}).get('tilt_deg', 0.5) if kind == 'search' else bl.get('warning', {}).get('tilt_deg', 2.0)
+        R = R @ rot([0, 1, 0], np.radians(float(tilt)))
+        d = {'kind': kind, 'link': kin.light_link(name), 'pos': (C @ T[:3, 3]).round(4).tolist(),
+             'dir': (C @ R[:, 0]).round(5).tolist(), 'size': list(s.get('size', [0.03, 0.1]))}
+        if kind == 'search':
+            p = bl.get('searchlight', {})
+            d.update(power_lm=float(p.get('power_lm', 10000.0)), beam_deg=float(p.get('beam_deg', 30.0)),
+                     range_m=float(p.get('range_m', 150.0)), color=list(p.get('color', [1.0, 0.97, 0.92])),
+                     energy_per_klm=float(p.get('energy_per_klm', 6.0)))
+        else:
+            p = bl.get('warning', {})
+            d.update(range_m=float(p.get('range_m', 40.0)), energy=float(p.get('energy', 4.0)),
+                     beam_deg=float(p.get('beam_deg', 70.0)))
+        out.append(d)
+    return out
 
 
 def robot_links_g(kin, q):

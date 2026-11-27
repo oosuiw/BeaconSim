@@ -401,6 +401,17 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
     v = (nn[m] * np.sign(nn[m, 2])[:, None] * a_[m, None]).sum(0)
     v /= np.linalg.norm(v)
     pitch = float(np.arctan2(v[0], v[2]))
+    # 조명 (빛은 전방 -X(STEP) = +x(base)): 서치라이트 = 라이트 마운트 전면 중심, 경광등 = LED WINDOW 전면 중심
+    lights = {}
+    for lname, keys, nm in (('searchlight', ('라이트 마운트',), None), ('warning_red', ('(RED)',), 'WINDOW'),
+                            ('warning_blue', ('(BLUE)',), 'WINDOW')):
+        sel = [p for p in up if any(x in key(p) for x in keys) and (nm is None or p['name'] == nm)]
+        if not sel:
+            continue
+        P = np.concatenate([p['tris'].reshape(-1, 3) for p in sel])
+        lo_, hi_ = P.min(0), P.max(0)
+        c = (lo_ + hi_) / 2
+        lights[lname] = (stl_to_base([lo_[0], c[1], c[2]], origin) - pivot, (hi_[1] - lo_[1]) / 1000, (hi_[2] - lo_[2]) / 1000)
     poses = {k: stl_to_base(p_, origin) - pivot for k, p_ in
              [('pandar40p', pandar), ('tele15', tele), ('ars408', radar), ('camera', cam), ('gnss', gnss)]}
     print(f'base_link 원점(STEP mm) {origin.round(2)}  바퀴 반지름 {wheel_radius:.4f} m, 휠베이스 {wheelbase:.3f} m, '
@@ -438,6 +449,16 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
             f.write(f'    xyz: [{p_[0]:.4f}, {p_[1]:.4f}, {p_[2]:.4f}]\n')
             f.write(f'    rpy: [0.0, {pitch:.5f}, 0.0]\n')
             f.write(f'    note: "{notes[k]}"\n')
+        if lights:
+            f.write('lights:                   # 비콘 조명 (STEP 에서 측정, sensor_tower_link 기준, 빛은 +x 전방으로)\n')
+            lnotes = {'searchlight': '라이트 마운트 전면 중심 (등기구 본체는 STEP 에 없음)',
+                      'warning_red': '(RED) LED 경광등 WINDOW 전면 중심', 'warning_blue': '(BLUE) LED 경광등 WINDOW 전면 중심'}
+            for k, (p_, w_, h_) in lights.items():
+                f.write(f'  {k}:\n    parent: sensor_tower_link\n    xyz: [{p_[0]:.4f}, {p_[1]:.4f}, {p_[2]:.4f}]\n')
+                f.write(f'    rpy: [0.0, {pitch:.5f}, 0.0]\n')
+                if k != 'searchlight':
+                    f.write(f'    size: [{w_:.3f}, {h_:.3f}]\n')
+                f.write(f'    note: "{lnotes[k]}"\n')
     print(f'생성: {cfg}')
     return cfg
 

@@ -18,6 +18,12 @@
 ## 센서타워 (`config/robot.yaml` → `sensor_tower:`)
 - [ ] `deploy_time` — 접힘 → 펴짐 시간 (지금 4.0 s, 가정)
 
+## 비콘 조명 (`config/sim.yaml` → `beacon_lights:`, 위치는 `config/robot.yaml` → `lights:`)
+- [ ] 서치라이트 `power_lm`(지금 10000, 임시), `beam_deg`(지금 30°, 임시), `tilt_deg`(지금 0.5°) — 등기구 사양·장착 각도
+- [ ] 서치라이트 등기구 위치 — STEP 에 본체가 없어 라이트 마운트 전면 중심으로 둠
+- [ ] 경광등 `scenario.flash_hz`(지금 3.0 Hz, 임시 — 사이드바에서 실시간 조절), 점멸 패턴 — 실제 LED 경광등 동작
+- [ ] 화면 밝기 환산 `energy_per_klm` — 실제 야간 사진과 비교해 맞출 것
+
 ## GNSS (`config/sim.yaml` → `gnss:`)
 - [ ] `antenna_xyz` — 안테나 위치 실측
 

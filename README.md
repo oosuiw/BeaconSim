@@ -187,13 +187,14 @@ source /opt/ros/humble/setup.bash && .venv/bin/python tools/run_scenarios.py sce
 | `/beacon/wheel_odom` | Odometry, 엔코더 적분 (50 Hz, TF 없음) | `odom → base_link` |
 | `/sensing/imu/imu_raw` | Imu, 각속도·가속도 + 잡음·바이어스 (100 Hz) | `imu_link` |
 | `/joint_states` | 좌우 바퀴 + `sensor_tower_joint` | |
+| `/beacon/searchlight`, `/beacon/warning_light` (구독) | std_msgs/Bool 서치라이트·경광등 켜기/끄기 (받으면 시나리오 설정보다 우선) | |
 | `/ground_truth/objects` (+`/markers`) | autoware_perception_msgs/PredictedObjects — 주행 차량 3D 박스, `object_id` = 차량 번호, 속도 (10 Hz, 200 m 안) | `base_link` (설정으로 `map`) |
 | `/ground_truth/lanes` (+`/markers`) | PointCloud2 차선 3D 중심선: `x,y,z,line_id,kind(1 황색실선 2 백색실선 3 백색점선),side,painted(점선 빈칸 0),wear` (1 m 간격, 뒤 30 m ~ 앞 100 m) | `base_link` |
 | `/ground_truth/camera/arducam/labels` | mono8 카메라 정답: 차선만 (2 백색, 3 황색, 나머지·가려진 곳 0). `camera.gt_classes` 로 바꿈 | `camera_optical_link` |
 
 주행 모델(모터 응답·스키드 스티어·미끄럼)과 IMU 의 임시 값은 [TODO.md](TODO.md) 참고 (실기 값으로 고칠 것).
 
-라벨 id: 1 road, 2 lane_white, 3 lane_yellow, 4 guardrail, 5 barrier, 6 terrain, 7 tunnel, 8 vehicle, 9 robot, 10 sign, 11 pole, 12 accident
+라벨 id: 1 road, 2 lane_white, 3 lane_yellow, 4 guardrail, 5 barrier, 6 terrain, 7 tunnel, 8 vehicle(주행 승용차), 9 robot, 10 sign, 11 pole, 12 accident, 13 pedestrian (사고 운전자), 14 truck (주행 트럭·트랙터), 15 bus (주행 버스), 16 trailer (세미 트레일러의 트레일러) — 차종 20종은 beacon_sim/vehicles.py
 
 ### 수신 쪽 영상·점군이 빠질 때 (DDS 버퍼)
 카메라 영상(약 7 MB)·Pandar 점군(약 1.8 MB)은 UDP 조각으로 나뉘어 전달된다. 받는 쪽 수신 버퍼(`net.core.rmem_max`/`rmem_default`)가

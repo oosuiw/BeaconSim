@@ -27,6 +27,12 @@ class EnvParams:
     p_rain: float = 0.25
     p_fog: float = 0.1
     p_snow: float = 0.1
+    # 야간 조도 (황혼·밤). -1 / 'random' 이면 실행마다 랜덤
+    moon: float = -1.0             # 달빛 0(그믐) ~ 1(보름)
+    sky_glow: float = -1.0         # 하늘 밝음(도시 광공해) 0(산간) ~ 1(도심 근처)
+    street_lights: str = 'random'  # random | all(전 구간) | partial(일부 구간) | none(없음)
+    street_coverage: float = -1.0  # partial 일 때 가로등 있는 구간 비율 0~1
+    lamp_fail: float = -1.0        # 꺼진(고장) 가로등 비율 0~1
 
     def to_dict(self):
         return asdict(self)
@@ -55,11 +61,26 @@ class Env:
     # 운전자 시인성
     visibility: float = 10000.0    # 기상학적 가시거리 [m] (≈ 3 × 대기 산란 거리)
     seed: int = -1                 # 실제로 쓴 환경 시드 (재현용)
+    # 야간 조도 (실제로 쓴 값)
+    moon: float = 0.0
+    sky_glow: float = 0.0
+    street_mode: str = 'all'       # all | partial | none
+    street_coverage: float = 1.0
+    lamp_fail: float = 0.0
 
     def label(self):
         s = f'{TIME_KO[self.time_of_day]} / {WEATHER_KO[self.weather]}'
         if self.weather != 'clear':
             s += f' ({self.intensity:.0%})'
+        return s
+
+    def night_label(self):
+        if self.time_of_day == 'day':
+            return ''
+        st = {'all': '가로등 전 구간', 'partial': f'가로등 일부 구간 ({self.street_coverage:.0%})', 'none': '가로등 없음'}
+        s = f'달빛 {self.moon:.0%} · 하늘 밝음 {self.sky_glow:.0%} · {st.get(self.street_mode, "")}'
+        if self.street_mode != 'none' and self.lamp_fail > 0.005:
+            s += f' · 고장 {self.lamp_fail:.0%}'
         return s
 
     def to_dict(self):
@@ -119,9 +140,27 @@ def resolve(ep: EnvParams, fallback_seed=0) -> Env:
         sky = tuple(np.array(fog_col))
     noise = {'day': 2.0, 'dusk': 4.0, 'night': 9.0}[tod]
     vis = 10000.0 if wx == 'clear' else float(min(10000.0, 3.0 * fog))
+    # 야간 조도: 달빛·광공해·가로등 (값을 정했으면 그대로, 아니면 랜덤). 난수는 항상 같은 순서로 뽑아 재현성 유지
+    r_moon, r_glow, r_mode, r_cov, r_fail = rng.random(5)
+    moon = float(ep.moon) if ep.moon >= 0 else float(r_moon)
+    glow = float(ep.sky_glow) if ep.sky_glow >= 0 else float(r_glow ** 1.5)          # 산간·교외 쪽이 흔함
+    mode = ep.street_lights if ep.street_lights in ('all', 'partial', 'none') else \
+        ('none' if r_mode < 0.4 else 'partial' if r_mode < 0.75 else 'all')
+    cov = float(ep.street_coverage) if ep.street_coverage >= 0 else float(0.2 + 0.6 * r_cov)
+    fail = float(ep.lamp_fail) if ep.lamp_fail >= 0 else float(0.15 * r_fail ** 2)
+    if mode == 'all':
+        cov = 1.0
+    elif mode == 'none':
+        cov = 0.0
+    if wx != 'clear':                       # 구름·강수: 달빛 가림
+        moon *= 1.0 - 0.8 * k
+    if tod == 'night':                      # 주변광: 달빛 + 광공해
+        amb = 0.02 + 0.05 * moon + 0.06 * glow
+        noise = 11.0 - 4.0 * min(1.0, moon + glow)
     return Env(tod, wx, k, tuple(map(float, sky)), float(sun), float(amb), float(fog), tuple(map(float, fog_col)),
-               tod != 'day', tod != 'day' or wx in ('rain', 'fog', 'snow'), float(noise),
-               float(alpha), float(false_rate), float(wet), float(snr), vis, int(seed))
+               tod != 'day' and mode != 'none', tod != 'day' or wx in ('rain', 'fog', 'snow'), float(noise),
+               float(alpha), float(false_rate), float(wet), float(snr), vis, int(seed),
+               moon, glow, mode, cov, fail)
 
 
 def notice_scale(env, beacon_light=True):

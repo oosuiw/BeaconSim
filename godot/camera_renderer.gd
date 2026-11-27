@@ -78,7 +78,11 @@ func _apply(msg: Dictionary) -> void:
 		idx.append(int(row[0]))
 		for k in range(1, 13):
 			T.append(float(row[k]))
-	world.set_vehicles(idx, T)
+	var lamp := PackedByteArray()
+	for x in msg.get("lamp", []):
+		lamp.append(int(x))
+	world.robot_pos = BeaconWorld.xf(msg["robot"]).origin
+	world.set_vehicles(idx, T, lamp, PackedFloat32Array(msg.get("art", [])), float(msg["t"]))
 	BeaconWorld.follow_weather(rain, cam)
 	label.text = "t = %.1f s  ·  차량 %d  ·  %d fps" % [float(msg["t"]), idx.size(), Engine.get_frames_per_second()]
 	if msg.has("capture"):

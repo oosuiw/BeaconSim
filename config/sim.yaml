@@ -23,7 +23,13 @@ scenario:
   accident_s: -1.0        # -1 랜덤
   accident_vehicles: 2
   accident_where: random  # random | open | tunnel_entry | tunnel | tunnel_exit
+  accident_type: basic    # basic(단독) | chain(연쇄 추돌) | truck(대형차 차로 막음) | random
+  pedestrians: 0          # 사고 운전자(보행자) 0~4, -1 = 랜덤 0~2
+  p_ped_in_lane: 0.3      # 보행자가 차로 위(사고 차 옆)에 있을 확률
   beacon_light: true      # 비콘 경광등 (야간 운전자 인지 거리에 영향)
+  flash_hz: 3.0           # (임시) 경광등 점멸 주기 [Hz] (적·청 한 번씩 = 1 주기) — 실행 중 바꿀 수 있음
+  warning_pattern: alternate   # alternate(적·청 번갈아) | sync(동시) | steady(계속)
+  searchlight: auto       # auto(황혼·밤·터널·짙은 안개) | on | off
   start_gap: 6.0
 
 # 접근 차량 (traffic.TrafficParams). 반응 비율은 합으로 정규화
@@ -59,6 +65,25 @@ environment:
   p_rain: 0.25
   p_fog: 0.1
   p_snow: 0.1
+  # 야간 조도 (황혼·밤): -1 / random 이면 실행마다 랜덤
+  moon: -1.0              # 달빛 0(그믐) ~ 1(보름)
+  sky_glow: -1.0          # 하늘 밝음(도시 광공해) 0 ~ 1
+  street_lights: random   # random | all | partial | none
+  street_coverage: -1.0   # partial 일 때 가로등 구간 비율
+  lamp_fail: -1.0         # 고장(꺼진) 가로등 비율
+beacon_lights:            # 비콘 조명 (위치는 robot.yaml lights:) — (임시) 값은 실기 사양으로 고칠 것
+  searchlight:
+    power_lm: 10000.0     # (임시) 광속 [lm] — 실물은 마주 보면 눈이 부실 정도
+    beam_deg: 30.0        # (임시) 빔 전체 각
+    range_m: 150.0        # 빛이 닿는 거리 (렌더 한계)
+    tilt_deg: 0.5         # 아래로 숙임 [°] (등 높이 약 0.49 m: 3° 면 9 m 앞 바닥에 꽂힘)
+    energy_per_klm: 6.0   # 화면 밝기 환산 (1000 lm 당 Godot 세기)
+    color: [1.0, 0.97, 0.92]
+  warning:
+    beam_deg: 70.0        # (임시) 전방으로 쏘는 빔 전체 각
+    range_m: 40.0         # 빛이 닿는 거리
+    tilt_deg: 2.0         # 아래로 숙임 [°]
+    energy: 4.0           # (임시) 화면 세기 (Godot)
 
 # u-blox ZED-F9P 모델 (gnss.GnssParams)
 ground_truth:             # 정답 (base_link 기준, 비콘 주변만)
@@ -122,6 +147,8 @@ sim:
   traffic_topic: /sim/traffic      # PoseArray, 슬롯 순서 고정 (비활성 슬롯은 z=-1000)
   events_topic: /sim/events        # JSON: 인지/감속/차로변경/추돌
   scenario_topic: /sim/scenario    # JSON (latched): 사고 위치, 비콘 배치, 환경
+  searchlight_topic: /beacon/searchlight        # std_msgs/Bool 서치라이트 켜기/끄기 (받으면 자동 설정보다 우선)
+  warning_light_topic: /beacon/warning_light    # std_msgs/Bool 경광등 켜기/끄기
   wheel_odom_topic: /beacon/wheel_odom   # nav_msgs/Odometry (엔코더 적분, frame odom → base_link, TF 는 안 냄)
   deploy_topic: /beacon/deploy     # std_msgs/Bool: true 센서타워 펴기, false 접기 (상위 제어기)
   joint_states_topic: /joint_states   # sensor_msgs/JointState: sensor_tower_joint (0 접힘 ~ 펴짐 각도)

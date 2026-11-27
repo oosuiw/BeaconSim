@@ -27,10 +27,10 @@ def main():
         keep.append(rgl.Entity(rgl.Mesh(p.v, p.f), entity_id=entity_id(p.cls, k), laser_retro=p.retro))
     scn = Scenario(L, ScenarioParams(**cfg['scenario']))
     tr = TrafficSim(L, scn, TrafficParams(**cfg['traffic']), cfg['scenario']['seed'])
-    npc_e = [rgl.Entity(rgl.Mesh(*scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height)),
+    npc_e = [rgl.Entity(rgl.Mesh(*scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height, sp.model, sp.variant)),
                         entity_id=entity_id('vehicle', i), laser_retro=0.25) for i, sp in enumerate(tr.specs)]
     for k, (sp, T) in enumerate(scn.accident_poses()):
-        e = rgl.Entity(rgl.Mesh(*scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height)),
+        e = rgl.Entity(rgl.Mesh(*scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height, sp.model, sp.variant)),
                        entity_id=entity_id('accident', k), laser_retro=0.25)
         e.set_transform(T)
         keep.append(e)

@@ -159,6 +159,8 @@ class Backend(CondMixin):
                 self.view[k] = v
 
     def save_settings(self):
+        if getattr(self, 'no_save', False):      # 테스트 캡처·자체 시험: 사용자 설정 파일을 건드리지 않음
+            return
         try:
             with open(SETTINGS) as f:
                 d = json.load(f)
@@ -646,6 +648,9 @@ class Server:
             be.export_async()
         elif a == 'apply_sim_yaml':
             be.apply_sim_yaml()
+        elif a in ('light_warning', 'light_search') and be.engine is not None and be.mode in ('dev', 'test'):
+            which = a.split('_')[1]
+            be.engine.set_light(which, not be.engine.light_on(which))     # 켜짐 ↔ 꺼짐 (설정을 바꾸면 풀림)
         elif a == 'mast' and be.engine is not None and be.mode in ('dev', 'test'):
             be.engine.set_mast(be.engine.mast_target <= 0, 'key')          # 펴기 ↔ 접기
         elif a == 'select_mode' and arg in ('dev', 'test', 'regress'):
@@ -789,12 +794,15 @@ class Server:
                'n_active': int(len(act)), 'scc_follow': int((snap['scc_target'] == -2).sum()),
                'in_tunnel': bool(e.model.in_tunnel(snap['s_b'], margin=30)),
                'robot': xform_g(T_wb, o), 'cam': xform_g(T_wb @ T_b_opt, o, cam=True), 'gnss': gj,
-               'links': robot_links_g(kin, q), 'mast': mast, 'odom_err': e.odom_error(),
+               'links': robot_links_g(kin, q), 'mast': mast, 'odom_err': e.odom_error(), 'lights': snap['lights'],
+               'light_on': {k: e.light_on(k) for k in ('warning', 'search')},
                'radar_T': xform_g(kin.mount('ars408', q)[1], np.zeros(3)) if 'ars408' in kin.sensors else None,
                'ros': bool(be.ros is not None and be.ros.ok)}
         self.send(msg, {'veh_idx': act.astype('<i4'), 'veh_T': xforms_g(snap['traffic_T'][act], o),
                         'veh_flags': flags.astype(np.uint8),
-                        'veh_kmh': (np.linalg.norm(snap['traffic_vel'][act], axis=1) * 3.6).astype('f4')})
+                        'veh_kmh': (np.linalg.norm(snap['traffic_vel'][act], axis=1) * 3.6).astype('f4'),
+                        'veh_lamp': snap['lamp'][act].astype(np.uint8),                 # 브레이크·깜빡이·상향등 비트
+                        'veh_art': snap['trailer_art'][act].astype('f4')})              # 트레일러 꺾임각 [rad]
         for ev in snap['events']:
             if ev[1] == 'mast':
                 be.log(f'[{ev[0]:.1f}s] {ev[3]}')
@@ -1005,9 +1013,11 @@ def main():
     ap.add_argument('--shot-delay', type=float, default=8.0)
     ap.add_argument('--shot-tab', type=int, default=None, help='테스트용: 캡처 전에 고를 사이드바 탭 번호 (0~5)')
     ap.add_argument('--shot-help', action='store_true', help='테스트용: 도움말 창을 연 상태로 캡처')
+    ap.add_argument('--shot-orbit', default=None, help='테스트용: 캡처 시점 "거리,피치°,방향°" (비콘 기준)')
     ap.add_argument('--selftest', default=None, help='테스트용: UI 자체 시험 (입력 주입) 후 결과 화면을 이 폴더에 저장하고 종료')
     a = ap.parse_args()
     be = Backend(ros=not a.no_ros)
+    be.no_save = bool(a.shot or a.selftest)
     if be.robot_cfg is None and a.robot_stl:
         be.build_robot(a.robot_stl)
     for kv in a.set:
@@ -1020,6 +1030,8 @@ def main():
             be.rand_scn = False
     w, h = (int(x) for x in a.size.lower().split('x'))
     extra = [f'--shot={os.path.abspath(a.shot)}', f'--shot-delay={a.shot_delay}'] if a.shot else []
+    if a.shot and a.shot_orbit:
+        extra.append(f'--shot-orbit={a.shot_orbit}')
     if a.shot and a.shot_tab is not None:
         extra.append(f'--shot-tab={a.shot_tab}')
     if a.shot and a.shot_help:

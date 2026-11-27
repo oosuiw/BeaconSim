@@ -145,9 +145,9 @@ class SceneRenderer:
     def vehicle_vaos(self, spec):
         """spec: traffic.VehicleSpec → [vao] (외형별 캐시: 차체 + 등화)."""
         if spec.key not in self.veh_vao:
-            v, f = scene.vehicle_mesh(spec.kind, spec.length, spec.width, spec.height)
+            v, f = scene.vehicle_mesh(spec.kind, spec.length, spec.width, spec.height, spec.model, spec.variant)
             lst = [self._vao(flat_vertices(v, f, spec.color))[0]]
-            for lv, lf, lc in scene.vehicle_lamps(spec.kind, spec.length, spec.width, spec.height):
+            for lv, lf, lc in scene.vehicle_lamps(spec.kind, spec.length, spec.width, spec.height, spec.model, spec.variant):
                 lst.append(self._vao(flat_vertices(lv, lf, lc, emissive=True))[0])
             self.veh_vao[spec.key] = lst
         return self.veh_vao[spec.key]

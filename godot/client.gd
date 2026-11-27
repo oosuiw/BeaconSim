@@ -78,6 +78,8 @@ var lbl_env: Label
 var lbl_cmd: Label
 var lbl_ros: Label
 var btn_mast: Button
+var btn_warn: Button
+var btn_search: Button
 var toggles := {}
 var dash := {}
 var dash_panel: PanelContainer
@@ -353,11 +355,15 @@ func _on_state(m: Dictionary, bin: PackedByteArray) -> void:
 	st = m
 	robot_T = BeaconWorld.xf(m["robot"])
 	world.set_robot(m["robot"], m.get("links"))
+	world.set_beacon_lights(m.get("lights"))
 	if m.get("radar_T") != null:
 		fan_local = BeaconWorld.xf(m["radar_T"])
 	var idx := _arr(m, bin, "veh_idx").to_int32_array()
 	var T := _arr(m, bin, "veh_T").to_float32_array()
-	world.set_vehicles(idx, T)
+	world.robot_pos = robot_T.origin
+	var lamp := _arr(m, bin, "veh_lamp") if m["arrays"].has("veh_lamp") else PackedByteArray()
+	var art := _arr(m, bin, "veh_art").to_float32_array() if m["arrays"].has("veh_art") else PackedFloat32Array()
+	world.set_vehicles(idx, T, lamp, art, float(m["t"]))
 	if sensor_cam:
 		sensor_cam.transform = BeaconWorld.xf(m["cam"])
 	fan_node.transform = robot_T * fan_local
@@ -791,6 +797,10 @@ func _unhandled_input(ev: InputEvent) -> void:
 				_preset("tunnel")
 			KEY_U:
 				_on_action("mast")
+			KEY_L:
+				_on_action("light_warning")
+			KEY_K:
+				_on_action("light_search")
 			KEY_F1:
 				help_layer.visible = true
 
@@ -876,6 +886,15 @@ func _process(dt: float) -> void:
 				sidebar.select_tab(int(args["shot-tab"]))
 			if args.has("shot-help"):
 				help_layer.visible = true
+			if args.has("shot-orbit"):            # 거리,피치°,방향° (비콘 기준, 방향 0 = 정면)
+				var o: PackedStringArray = str(args["shot-orbit"]).split(",")
+				var fwd := robot_T.basis.x
+				follow = true
+				orbit["target"] = robot_T.origin + Vector3(0, 0.4, 0)
+				orbit["dist"] = float(o[0])
+				orbit["pitch"] = deg_to_rad(float(o[1]))
+				orbit["yaw"] = atan2(fwd.z, -fwd.x) + deg_to_rad(float(o[2]))
+				await get_tree().create_timer(0.6).timeout
 			await get_tree().create_timer(0.5).timeout
 			await RenderingServer.frame_post_draw
 			get_viewport().get_texture().get_image().save_png(path)
@@ -1031,6 +1050,17 @@ func _build_dashboard() -> void:
 	mc.visible = false
 	dash["mast"] = mc
 	v.add_child(mc)
+	var lr := HBoxContainer.new()              # 비콘 조명 켜기/끄기 (눌림 = 켜짐)
+	lr.add_theme_constant_override("separation", 6)
+	v.add_child(lr)
+	btn_warn = K.btn(K.ic(K.I_WARN) + "  경광등", "경광등 켜기 / 끄기 (L) — 상위 제어기는 /beacon/warning_light", true)
+	btn_warn.pressed.connect(func(): _on_action("light_warning"))
+	btn_warn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lr.add_child(btn_warn)
+	btn_search = K.btn(K.ic(K.I_BULB) + "  서치라이트", "서치라이트 켜기 / 끄기 (K) — 상위 제어기는 /beacon/searchlight", true)
+	btn_search.pressed.connect(func(): _on_action("light_search"))
+	btn_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lr.add_child(btn_search)
 	var oc := K.label("", K.MUTED, 12)
 	oc.tooltip_text = "휠 오도메트리(엔코더 적분, /beacon/wheel_odom)와 실제 위치의 차이 — 미끄럼·스키드 스티어 오차"
 	dash["odom"] = oc
@@ -1137,7 +1167,7 @@ func _build_help() -> void:
 	for it in [["↑ / ↓", "비콘 전진 / 후진 (ROS /cmd_vel이 오면 그쪽 우선)"], ["← / →", "비콘 회전"],
 			["좌클릭 드래그", "시점 회전"], ["우클릭 드래그", "시점 이동 (따라가기 해제)"], ["휠", "확대 / 축소"],
 			["F", "비콘 따라가기"], ["1  2  3", "비콘 / 전체 / 터널 시점"], ["Space", "일시정지 / 재생"],
-			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["U", "센서타워 펴기 / 접기"], ["F1", "도움말"]]:
+			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["U", "센서타워 펴기 / 접기"], ["L", "경광등 켜기 / 끄기"], ["K", "서치라이트 켜기 / 끄기"], ["F1", "도움말"]]:
 		var c := K.chip(it[0], K.ACCENT)
 		c.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		c.custom_minimum_size = Vector2(130, 0)
@@ -1183,6 +1213,11 @@ func _update_ui() -> void:
 	var oe = st.get("odom_err")
 	if typeof(oe) == TYPE_ARRAY:
 		dash["odom"].text = "휠 오도메트리 오차 %.2f m · %.1f°" % [float(oe[0]), rad_to_deg(float(oe[1]))]
+	# 비콘 조명 버튼 (눌림 = 켜짐, 실제 상태를 따름)
+	var lo = st.get("light_on")
+	if typeof(lo) == TYPE_DICTIONARY:
+		btn_warn.set_pressed_no_signal(bool(lo["warning"]))
+		btn_search.set_pressed_no_signal(bool(lo["search"]))
 	# 접이식 센서타워
 	var ms = st.get("mast")
 	var has_mast := typeof(ms) == TYPE_DICTIONARY

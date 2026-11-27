@@ -126,7 +126,7 @@ class Metrics:
         total = sum(self.gnss_time.values()) or 1.0
         nd = list(tr.notice_at.values())
         r = {
-            'crashes': c['crash'], 'beacon_hits': c['beacon_hit'], 'noticed': c['noticed'],
+            'crashes': c['crash'], 'beacon_hits': c['beacon_hit'], 'ped_hits': c.get('ped_hit', 0), 'noticed': c['noticed'],
             'lane_changes': c['lane_change'], 'brakes': c['brake'], 'scc_locks': c['scc_lock'],
             'vehicles_passed': len(self.passed),
             'min_ttc_s': None if math.isinf(self.min_ttc) else round(self.min_ttc, 2),
@@ -164,7 +164,7 @@ COLS = ['t', 'x', 'y', 's', 't_lat', 'v', 'vehicles', 'noticed', 'lane_change', 
 
 # 기준 키 → (지표 키, 비교)
 CRITERIA = {
-    'max_crashes': ('crashes', '<='), 'max_beacon_hits': ('beacon_hits', '<='),
+    'max_crashes': ('crashes', '<='), 'max_beacon_hits': ('beacon_hits', '<='), 'max_ped_hits': ('ped_hits', '<='),
     'min_ttc_s': ('min_ttc_s', '>='), 'max_pass_speed_kph': ('pass_speed_max_kph', '<='),
     'min_pass_clearance_m': ('pass_clearance_min_m', '>='), 'min_notice_dist_m': ('notice_dist_min_m', '>='),
     'beacon_not_damaged': ('beacon_damaged', 'false'), 'max_beacon_contacts': ('beacon_contacts', '<='),
@@ -205,7 +205,7 @@ def judge(result, criteria):
 
 # GUI 표시용 이름 (순서 = 편집 화면 순서)
 CRITERIA_KO = {
-    'max_beacon_hits': '비콘 추돌 수 ≤', 'beacon_not_damaged': '비콘 파손 없음', 'max_beacon_contacts': '비콘 접촉 수 ≤',
+    'max_beacon_hits': '비콘 추돌 수 ≤', 'max_ped_hits': '보행자 충돌 수 ≤', 'beacon_not_damaged': '비콘 파손 없음', 'max_beacon_contacts': '비콘 접촉 수 ≤',
     'min_ttc_s': '비콘 차로 최소 TTC ≥ [s]', 'max_crashes': '전체 추돌 수 ≤', 'max_pass_speed_kph': '비콘 통과 속도 ≤ [km/h]',
     'min_pass_clearance_m': '통과 횡간격 ≥ [m]', 'min_notice_dist_m': '운전자 인지 거리 ≥ [m]',
     'min_scc_locks': 'SCC 인식 수 ≥', 'min_gnss_fix_ratio': 'GNSS FIX 비율 ≥', 'max_gnss_reconverge_s': 'GNSS 재수렴 ≤ [s]',
@@ -216,7 +216,7 @@ CRITERIA_KO = {
 # 예시값 (계획서 6장: 합격 기준 미정 → 실차 요구사항에서 역산해 수정)
 DEFAULT_CRITERIA = {'max_beacon_hits': 0, 'beacon_not_damaged': True, 'max_beacon_contacts': 0, 'min_ttc_s': 2.0}
 CRITERIA_DEFAULT_VALUE = {
-    'max_beacon_hits': 0, 'beacon_not_damaged': True, 'max_beacon_contacts': 0, 'min_ttc_s': 2.0, 'max_crashes': 0,
+    'max_beacon_hits': 0, 'max_ped_hits': 0, 'beacon_not_damaged': True, 'max_beacon_contacts': 0, 'min_ttc_s': 2.0, 'max_crashes': 0,
     'max_pass_speed_kph': 80.0, 'min_pass_clearance_m': 1.0, 'min_notice_dist_m': 100.0, 'min_scc_locks': 1,
     'min_gnss_fix_ratio': 0.8, 'max_gnss_reconverge_s': 60.0, 'max_loc_lat_rms_m': 0.1, 'max_loc_lat_m': 0.3,
     'max_loc_lat_tunnel_m': 0.3, 'min_lane_precision': 0.8, 'min_lane_recall': 0.8,

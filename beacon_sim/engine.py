@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 
-from . import rgl, scene
+from . import rgl, scene, vehicles
 from .common import load_robot_parts
 from .drive import DriveModel, ImuModel, WheelOdom
 from .robot_model import RobotKin, load_robot_links
@@ -21,6 +21,7 @@ from .sensors import ARS408, Pandar40P, Tele15, entity_id
 from .traffic import Scenario, ScenarioParams, TrafficParams, TrafficSim, resolve_seed
 
 _RGL_LOCK = threading.Lock()
+
 
 
 class SimEngine:
@@ -61,6 +62,7 @@ class SimEngine:
         self.imu_every = max(1, int(round(1.0 / self.imu.p.rate_hz / self.DT)))
         self.odom_every = max(1, int(round(1.0 / self.drive.p.odom_rate_hz / self.DT)))
         self.x0, self.y0, self.yaw0 = None, None, None
+        self.light_cmd = {'warning': None, 'search': None}
         self.cmd = {'ros': (0.0, 0.0, -1e9), 'key': (0.0, 0.0, -1e9)}
         self.cmd_src = '-'
         self.lock = threading.Lock()
@@ -83,7 +85,7 @@ class SimEngine:
         self.gnss_next = 0.0
         self.T_wb, self.s_b, self.t_b = self._ground_pose()
         # 운전자 인지: 환경·경광등 배율, 가시거리, 시야 가림(RGL 레이)
-        self.traffic.notice_scale = notice_scale(self.env, self.scn.sp.beacon_light)
+        self.traffic.notice_scale = notice_scale(self.env, self.light_on('warning'))
         self.traffic.visibility = self.env.visibility * 0.8
         self.traffic.los_fn = self._line_of_sight
         self._los_graph = None
@@ -105,18 +107,37 @@ class SimEngine:
             self._ents.append(rgl.Entity(mesh, entity_id=entity_id(p.cls, k), laser_retro=p.retro))
         meshes = {}
         self.npc_entities = []
+        self.trailer_entities = {}               # 슬롯 → (RGL 물체, 킹핀 x) — 세미 트레일러의 트레일러 (꺾임)
         for i, sp in enumerate(self.traffic.specs):
+            tr = vehicles.trailer(sp.model) if sp.model else None
             if sp.key not in meshes:
-                meshes[sp.key] = rgl.Mesh(*scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height))
+                vf = vehicles.mesh(sp.model, sp.variant, with_trailer=False) if tr else \
+                    scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height, sp.model, sp.variant)
+                meshes[sp.key] = rgl.Mesh(*vf)
                 self._meshes.append(meshes[sp.key])
+            if tr is not None:
+                tk = ('trailer', sp.model)
+                if tk not in meshes:
+                    vs, fs, n = [], [], 0
+                    for v, f, _t in tr['parts']:
+                        vs.append(v)
+                        fs.append(f + n)
+                        n += len(v)
+                    meshes[tk] = rgl.Mesh(np.concatenate(vs), np.concatenate(fs).astype(np.int32))
+                    self._meshes.append(meshes[tk])
+                self.trailer_entities[i] = (rgl.Entity(meshes[tk], entity_id=entity_id('trailer', i),
+                                                       laser_retro=scene.RETRO['trailer']), tr['hitch_x'])
             self.npc_entities.append(rgl.Entity(meshes[sp.key], entity_id=entity_id('vehicle', i),
                                                 laser_retro=scene.RETRO['vehicle']))
         self.npc_kind = {i: sp.kind for i, sp in enumerate(self.traffic.specs)}
+        self.npc_label = np.array([scene.CLASS['truck' if sp.kind == 'truck' else 'bus' if sp.kind == 'bus' else 'vehicle']
+                                   for sp in self.traffic.specs] or [scene.CLASS['vehicle']], np.uint32)
         self.accident = self.scn.accident_poses()
         for k, (sp, T) in enumerate(self.accident):
-            mesh = rgl.Mesh(*scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height))
+            mesh = rgl.Mesh(*scene.vehicle_mesh(sp.kind, sp.length, sp.width, sp.height, sp.model, sp.variant))
             self._meshes.append(mesh)
-            e = rgl.Entity(mesh, entity_id=entity_id('accident', k), laser_retro=scene.RETRO['accident'])
+            cls = 'pedestrian' if sp.kind == 'pedestrian' else 'accident'          # 보행자도 같은 목록 (번호 공유)
+            e = rgl.Entity(mesh, entity_id=entity_id(cls, k), laser_retro=scene.RETRO[cls])
             e.set_transform(T)
             self._ents.append(e)
         ign = {n: self.cfg[n]['sensor_id'] for n in ('pandar40p', 'tele15', 'ars408')}
@@ -140,7 +161,7 @@ class SimEngine:
                 s.graph.destroy()
             if self._los_graph is not None:
                 self._los_graph.destroy()
-            for e in self._ents + self.npc_entities + self.robot_entities:
+            for e in self._ents + self.npc_entities + self.robot_entities + [t[0] for t in self.trailer_entities.values()]:
                 e.destroy()
             for m in self._meshes:
                 m.destroy()
@@ -177,6 +198,56 @@ class SimEngine:
         tx, ty = c * dx - s * dy, s * dx + c * dy
         dyaw = (self.odom.yaw - (self.yaw - self.yaw0) + np.pi) % (2 * np.pi) - np.pi
         return float(np.hypot(self.odom.x - tx, self.odom.y - ty)), float(dyaw)
+
+    def lights(self):
+        """비콘 조명 상태 {'red', 'blue', 'search'}: 시나리오 설정 + ROS 명령(있으면 우선) + 시각에 따른 점멸"""
+        sp = self.scn.sp
+        warn = self.light_on('warning')
+        red = blue = False
+        if warn and not self.damaged:
+            hz = max(float(getattr(sp, 'flash_hz', 3.0)), 0.05)
+            ph = (self.t * hz) % 1.0
+            if sp.warning_pattern == 'steady':
+                red = blue = True
+            elif sp.warning_pattern == 'sync':
+                red = blue = ph < 0.5
+            else:
+                red, blue = ph < 0.5, ph >= 0.5
+        return {'red': bool(red), 'blue': bool(blue), 'search': bool(self.light_on('search') and not self.damaged)}
+
+    def light_on(self, which):
+        """조명이 켜져 있어야 하는지 (점멸 위상 무관): 'warning' | 'search'. 명령(ROS·버튼) > 시나리오 설정"""
+        sp = self.scn.sp
+        if self.light_cmd[which] is not None:
+            return bool(self.light_cmd[which])
+        if which == 'warning':
+            return bool(sp.beacon_light)
+        mode = sp.searchlight
+        if mode in ('on', 'off'):
+            return mode == 'on'
+        env = self.env                          # 자동: 어둡거나(황혼·밤·터널) 짙은 안개
+        return bool(env.time_of_day != 'day' or self.model.in_tunnel(self.s_b, margin=20)
+                    or (env.weather == 'fog' and env.intensity > 0.4))
+
+    def set_light(self, which, on):
+        """조명 명령 (ROS·재생 바 버튼): which 'warning' | 'search', on True/False (None = 시나리오 설정대로)"""
+        self.light_cmd[which] = on
+        self._light_changed()
+
+    def set_light_params(self, **kw):
+        """실행 중 조명 설정 변경 (사이드바): beacon_light, warning_pattern, flash_hz, searchlight.
+        바꾼 조명의 버튼·ROS 명령은 풀어서 새 설정이 바로 보이게 한다."""
+        for k, v in kw.items():
+            setattr(self.scn.sp, k, v)
+            if k in ('beacon_light', 'warning_pattern', 'flash_hz'):
+                self.light_cmd['warning'] = None
+            elif k == 'searchlight':
+                self.light_cmd['search'] = None
+        self._light_changed()
+
+    def _light_changed(self):
+        # 경광등 켜짐은 운전자 인지 거리에 영향 (밤에 끄면 늦게 봄)
+        self.traffic.notice_scale = notice_scale(self.env, self.light_on('warning'))
 
     @property
     def mast_frac(self):
@@ -235,7 +306,7 @@ class SimEngine:
             return '터널 벽' if m.in_tunnel(s_c) else '가드레일'
         for sp, T in self.accident:
             if np.linalg.norm(T[:2, 3] - [x, y]) < 8 and self._obb_overlap(R, self._veh_rect(sp, T)):
-                return '사고 차량'
+                return '보행자' if sp.kind == 'pedestrian' else '사고 차량'
         Ts, _ = self.traffic.poses_at(self.t)
         near = np.nonzero(self.traffic.active & (np.linalg.norm(Ts[:, :2, 3] - [x, y], axis=1) < 12))[0]
         for i in near:
@@ -362,6 +433,10 @@ class SimEngine:
                 for i in changed:
                     self.npc_entities[i].set_mat(M[i])
                 self._npc_last = M
+                if self.trailer_entities:            # 트레일러: 트랙터 포즈 · 킹핀 이동 · 꺾임 회전
+                    art = self.traffic.trailer_angle()
+                    for i, (ent, hx) in self.trailer_entities.items():
+                        ent.set_mat(np.ascontiguousarray((Ts[i] @ vehicles.hitch_T(hx, art[i]))[:3, :4], dtype=np.float32))
                 for name in due:
                     self.next_fire[name] += self.period[name]
                     t0 = time.perf_counter()
@@ -405,6 +480,10 @@ class SimEngine:
         s = self.sensors[name]
         if name == 'pandar40p':
             out['points'], out['gt'] = s.run(T_ws)        # 속도 필드 미사용 → 센서 속도 전달 안 함 (RGL 오류 회피)
+            g = out['gt']                                   # 주행 차량 라벨을 차종으로: 승용 8, 트럭 14, 버스 15
+            vm = g['label'] == scene.CLASS['vehicle']
+            if vm.any():
+                g['label'][vm] = self.npc_label[np.minimum(g['instance'][vm], len(self.npc_label) - 1)]
         elif name == 'tele15':
             out['points'] = s.run(T_ws, int(self.t * 1e9) + 1_000_000_000)
         elif name == 'ars408':
@@ -419,7 +498,7 @@ class SimEngine:
         R_sw = T_ws[:3, :3].T
         _, vel = self.traffic.poses_at(self.t)
         tracks = []
-        for cls_name in ('vehicle', 'accident'):
+        for cls_name in ('vehicle', 'accident', 'pedestrian'):
             veh = c[c['label'] == scene.CLASS[cls_name]]
             for inst in np.unique(veh['instance']):
                 cl = veh[veh['instance'] == inst]
@@ -445,10 +524,12 @@ class SimEngine:
             't': self.t, 'T_wb': self.T_wb.copy(), 'v': self.v, 'w': self.w, 'cmd_src': self.cmd_src,
             'damaged': self.damaged, 'contact': self.contact,
             'mast_q': self.mast_q, 'mast_target': self.mast_target, 'mast_frac': self.mast_frac,
+            'lights': self.lights(),
             's_b': self.s_b, 't_b': self.t_b,
             'traffic_T': Ts, 'traffic_vel': vel, 'active': tr.active.copy(), 'crashed': tr.crashed.copy(),
             'noticed': tr.noticed.copy(), 'scc': tr.scc.copy(), 'scc_target': tr.scc_target.copy(),
             'scc_lock': tr.scc_lock.copy(), 'beh': tr.beh.copy(), 'counts': dict(tr.counts),
+            'lamp': tr.lamp_bits(self.t), 'trailer_art': tr.trailer_angle(),
             'sensors': latest, 'events': ev,
             }
         return snap

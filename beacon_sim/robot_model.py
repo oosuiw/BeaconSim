@@ -45,6 +45,13 @@ class RobotKin:
             parent = s.get('parent', 'base_link')
             self.sensors[name] = (s['frame_id'], parent, make_T(s['xyz'], s['rpy']))
         self.links = links_meta or {}
+        self.lights = {}                 # 조명: 이름 → (parent, T) (robot.yaml lights:, 없으면 빈 dict)
+        for name, s in (robot_cfg.get('lights') or {}).items():
+            self.lights[name] = (s.get('parent', 'base_link'), make_T(s['xyz'], s.get('rpy', (0, 0, 0))), s)
+
+    def light_link(self, name):
+        """조명이 붙은 화면 링크 ('mast' | 'base')"""
+        return 'mast' if self.has_mast and self.lights[name][0] == self.mast_frame else 'base'
 
     def T_base_mast(self, q):
         T = np.eye(4)

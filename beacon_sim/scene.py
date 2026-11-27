@@ -12,20 +12,22 @@ from .roadgen import RoadModel
 # 시맨틱 클래스 id (RGL entity id = 점별 정답 라벨)
 CLASS = {
     'road': 1, 'lane_white': 2, 'lane_yellow': 3, 'guardrail': 4, 'barrier': 5,
-    'terrain': 6, 'tunnel': 7, 'vehicle': 8, 'robot': 9, 'sign': 10, 'pole': 11, 'accident': 12,
+    'terrain': 6, 'tunnel': 7, 'vehicle': 8, 'robot': 9, 'sign': 10, 'pole': 11, 'accident': 12, 'pedestrian': 13,
+    'truck': 14, 'bus': 15, 'trailer': 16,
 }
+# 주행 차량 라벨: 승용(car) = 'vehicle'(8), 트럭 = 14, 버스 = 15, 세미 트레일러의 트레일러 = 16 (라이다 정답에서 차종으로 다시 매김). 사고 차량은 12
 
 # 반사율(0~1). LiDAR intensity 계산과 raydrop에 쓴다. 실차 로그로 보정할 값.
 RETRO = {
     'road': 0.10, 'lane_white': 0.55, 'lane_yellow': 0.45, 'guardrail': 0.35, 'barrier': 0.30,
     'terrain': 0.15, 'tunnel': 0.40, 'vehicle': 0.25, 'robot': 0.30, 'sign': 0.90, 'pole': 0.30,
-    'accident': 0.25,
+    'accident': 0.25, 'pedestrian': 0.20, 'truck': 0.30, 'bus': 0.30, 'trailer': 0.30,
 }
 
 # 레이더 RCS (dBsm)
-RCS = {'vehicle_car': 10.0, 'vehicle_truck': 20.0, 'guardrail': 0.0, 'barrier': -5.0,
+RCS = {'vehicle_car': 10.0, 'vehicle_truck': 20.0, 'truck': 20.0, 'bus': 20.0, 'trailer': 20.0, 'guardrail': 0.0, 'barrier': -5.0,
        'tunnel': 5.0, 'sign': 15.0, 'pole': -5.0, 'road': -50.0, 'terrain': -50.0,
-       'lane_white': -50.0, 'lane_yellow': -50.0, 'robot': 0.0, 'accident': 10.0}
+       'lane_white': -50.0, 'lane_yellow': -50.0, 'robot': 0.0, 'accident': 10.0, 'pedestrian': -5.0}
 
 COLOR = {
     'road': (0.22, 0.22, 0.23), 'lane_white': (0.92, 0.92, 0.90), 'lane_yellow': (0.95, 0.75, 0.10),
@@ -363,9 +365,22 @@ def _terrain(m: RoadModel):
 
 # ---------------------------------------------------------------- 차량 메시
 
-def vehicle_mesh(kind, length, width, height):
-    """차량 로컬 좌표(원점: 바닥 중심, x 전방) 메시."""
+def vehicle_mesh(kind, length, width, height, model='', variant=0):
+    """차량 로컬 좌표(원점: 바닥 중심, x 전방) 메시. model 이 있으면 차종별 절차 메시 (vehicles)."""
+    if model:
+        from . import vehicles
+        return vehicles.mesh(model, variant)
     mb = MeshBuilder()
+    if kind == 'pedestrian':                   # 사람: 다리 2 · 몸통 · 팔 2 · 머리 (x 전방, length = 몸 두께, width = 어깨 폭)
+        h, d, w = height, length, width
+        leg = 0.47 * h
+        for y0, y1 in ((0.06, 0.30), (-0.30, -0.06)):                       # 다리
+            mb.local_box([-d / 2 * 0.7, y0 * w, 0.0], [d / 2 * 0.7, y1 * w, leg])
+        for y0, y1 in ((0.38, 0.5), (-0.5, -0.38)):                          # 팔
+            mb.local_box([-d / 2 * 0.5, y0 * w, leg + 0.08], [d / 2 * 0.5, y1 * w, 0.82 * h])
+        mb.local_box([-d / 2, -w * 0.36, leg], [d / 2, w * 0.36, 0.84 * h])
+        mb.local_box([-0.11, -0.09, 0.85 * h], [0.11, 0.09, h])
+        return np.concatenate(mb.v).astype(np.float32), np.concatenate(mb.f).astype(np.int32)
     if kind == 'car':
         mb.local_box([-length / 2, -width / 2, 0.25], [length / 2, width / 2, 0.85])
         mb.local_box([-length / 2 + 0.9, -width / 2 + 0.1, 0.85], [length / 2 - 1.3, width / 2 - 0.1, height])
@@ -383,9 +398,14 @@ def vehicle_mesh(kind, length, width, height):
     return np.concatenate(mb.v).astype(np.float32), np.concatenate(mb.f).astype(np.int32)
 
 
-def vehicle_lamps(kind, length, width, height):
+def vehicle_lamps(kind, length, width, height, model='', variant=0):
     """전조등(흰색)·후미등(빨강) 상자 메시 → [(v, f, color)]. 렌더링 전용 (야간/악천후 발광)."""
+    if model:
+        from . import vehicles
+        return vehicles.lamps(model, variant)
     out = []
+    if kind == 'pedestrian':
+        return out
     zl, zh = (0.55, 0.75) if kind == 'car' else (0.6, 0.85)
     for sy in (-1, 1):
         y0 = sy * (width / 2 - 0.35)
@@ -396,16 +416,39 @@ def vehicle_lamps(kind, length, width, height):
     return out
 
 
-def street_lights(m: RoadModel):
-    """조명주 램프 위치 (map 좌표, 터널 밖) — 야간 렌더 광원."""
-    pts = []
+def street_lights(m: RoadModel, with_s=False):
+    """조명주 램프 위치 (map 좌표, 터널 밖) — 야간 렌더 광원. with_s 면 각 램프의 s 도 함께."""
+    pts, ss = [], []
     for side in (-1, 1):
         tp = side * (m.guardrail_t + 1.0)
         for sp in np.arange(25.0, m.length, 50.0):
             if m.in_tunnel(sp, margin=10):
                 continue
             pts.append(m.point(sp, tp - side * 1.8, 9.7))
-    return np.array(pts) if pts else np.zeros((0, 3))
+            ss.append(sp)
+    P = np.array(pts) if pts else np.zeros((0, 3))
+    return (P, np.array(ss)) if with_s else P
+
+
+def street_lights_on(m: RoadModel, s_lamps, env, seed=0):
+    """램프별 켜짐 (bool 배열). 가로등 있는 구간(partial: 400~1500 m 덩어리, 터널 입출구 앞뒤 150 m 는 항상) + 고장."""
+    n = len(s_lamps)
+    if env is None or env.time_of_day == 'day' or env.street_mode == 'none' or n == 0:
+        return np.zeros(n, bool)
+    rng = np.random.default_rng(int(env.seed) * 7919 + seed + 17)
+    lit = np.ones(n, bool)
+    if env.street_mode == 'partial':
+        lit[:] = False
+        a = float(rng.uniform(-500, 0))
+        while a < m.length:
+            L = float(rng.uniform(400, 1500))
+            if rng.random() < env.street_coverage:
+                lit |= (s_lamps >= a) & (s_lamps < a + L)
+            a += L
+        for ta, tb in m.tunnels:                     # 터널 입출구 조명 (완화 구간)
+            lit |= ((s_lamps > ta - 150) & (s_lamps < ta)) | ((s_lamps > tb) & (s_lamps < tb + 150))
+    lit &= rng.random(n) >= env.lamp_fail
+    return lit
 
 
 def tunnel_light(m: RoadModel, sth):

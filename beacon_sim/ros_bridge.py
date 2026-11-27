@@ -140,6 +140,11 @@ class RosBridge:
         # 접이식 센서타워: 펴기/접기 명령, 관절 상태
         node.create_subscription(Bool, sc.get('deploy_topic', '/beacon/deploy'),
                                  lambda m: self.e.set_mast(bool(m.data), 'ros'), 10)
+        # 비콘 조명: 서치라이트·경광등 켜기/끄기 (받으면 시나리오 설정보다 우선)
+        node.create_subscription(Bool, sc.get('searchlight_topic', '/beacon/searchlight'),
+                                 lambda m: self.e.set_light('search', bool(m.data)), 10)
+        node.create_subscription(Bool, sc.get('warning_light_topic', '/beacon/warning_light'),
+                                 lambda m: self.e.set_light('warning', bool(m.data)), 10)
         self.pub['joint_states'] = cp(JointState, sc.get('joint_states_topic', '/joint_states'), 10)
         self.pub['wheel_odom'] = cp(Odometry, sc.get('wheel_odom_topic', '/beacon/wheel_odom'), 10)
         self.pub['imu'] = cp(Imu, cfg.get('imu', {}).get('topic', '/sensing/imu/imu_raw'), 50)
@@ -198,7 +203,8 @@ class RosBridge:
             for k, p in enumerate(e.parts):
                 ma.markers.append(mesh_marker(p, 'scene', k, self.map_frame))
             for k, (sp, T) in enumerate(e.accident):
-                ma.markers.append(box_marker(self.map_frame, 'accident', k, sp, T, (1.0, 0.45, 0.0, 0.95)))
+                ma.markers.append(box_marker(self.map_frame, 'accident', k, sp, T,
+                                             (1.0, 0.2, 0.8, 0.95) if sp.kind == 'pedestrian' else (1.0, 0.45, 0.0, 0.95)))
             self.pub['scene'].publish(ma)
 
     # 엔진 스레드에서 매 스텝 호출
@@ -308,7 +314,8 @@ class RosBridge:
                 d.object_id = UUID(uuid=list(int(o['id'] + 1).to_bytes(16, 'little')))     # 차량 번호 (재시작 전까지 고정)
                 d.existence_probability = 1.0
                 c = ObjectClassification()
-                c.label = ObjectClassification.TRUCK if o['kind'] == 'truck' else ObjectClassification.CAR
+                c.label = {'truck': ObjectClassification.TRUCK, 'bus': ObjectClassification.BUS,
+                           'trailer': ObjectClassification.TRAILER}.get(o['kind'], ObjectClassification.CAR)
                 c.probability = 1.0
                 d.classification.append(c)
                 k = d.kinematics

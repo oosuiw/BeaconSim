@@ -319,7 +319,7 @@ class ARS408:
         rcs = self._rcs_lut[np.clip(cls, 0, len(self._rcs_lut) - 1)]
         veh = cls == CLASS['vehicle']
         if veh.any() and npc_kind:
-            truck = np.array([npc_kind.get(int(i)) == 'truck' for i in inst[veh]])
+            truck = np.array([npc_kind.get(int(i)) in ('truck', 'bus') for i in inst[veh]])
             rcs[veh] = np.where(truck, RCS['vehicle_truck'], RCS['vehicle_car'])
         rcs_eff = rcs + 40.0 * np.log10(np.maximum(np.cos(inc), 1e-3))   # 비스듬한 면(노면 등)은 약함
         snr = rcs_eff - 40.0 * np.log10(np.maximum(d, 0.2)) + self.SNR_CONST

@@ -20,13 +20,17 @@ GROUP_KO = {'map': '맵', 'scenario': '시나리오', 'traffic': '교통', 'envi
 KEY_KO = {'seed': '시드', 'length': '길이', 'lanes': '차로 수', 'design_speed': '설계속도', 'tunnels': '터널',
           'gantries': '갠트리', 'wear': '차선 불량', 'wear_faded': '희미함', 'wear_broken': '끊김', 'wear_sparse': '희소',
           'side': '방향', 'lane': '비콘 차로', 'accident_s': '사고 위치(s)', 'accident_where': '사고 위치',
-          'accident_vehicles': '사고 차량', 'beacon_light': '경광등', 'tower_auto': '센서타워 자동 펴기',
+          'accident_vehicles': '사고 차량', 'accident_type': '사고 유형', 'pedestrians': '보행자',
+          'p_ped_in_lane': '차로 위 보행자 확률', 'beacon_light': '경광등', 'warning_pattern': '경광등 점멸', 'flash_hz': '경광등 점멸 주기', 'searchlight': '서치라이트',
+          'moon': '달빛', 'sky_glow': '하늘 밝음', 'street_lights': '가로등', 'street_coverage': '가로등 구간 비율',
+          'lamp_fail': '고장 가로등', 'tower_auto': '센서타워 자동 펴기',
           'tower_deploy_at': '센서타워 펴기 시각', 'start_gap': '비콘 간격', 'enabled': '교통 켜기',
           'flow': '교통량', 'flow_opposite': '반대 교통량', 'speed_mean': '평균 속도', 'truck_ratio': '대형차',
           'p_lane_change': '차로변경', 'p_brake': '감속', 'p_crash': '무반응', 'p_scc': 'SCC 비율',
           'time_of_day': '시간대', 'weather': '날씨', 'intensity': '강도', 'duration': '시험 시간',
           'criteria': '판정 기준', 'faults': '고장 주입', 'topics': '평가 토픽'}
-INT_CRITERIA = {'max_beacon_hits', 'max_beacon_contacts', 'max_crashes', 'min_scc_locks'}
+ATYPE_KO = {'basic': '단독 사고', 'chain': '연쇄 추돌', 'truck': '대형차 차로 막음', 'random': '유형 랜덤'}
+INT_CRITERIA = {'max_ped_hits', 'max_beacon_hits', 'max_beacon_contacts', 'max_crashes', 'min_scc_locks'}
 TIME_KO = {'random': '랜덤', 'day': '낮', 'dusk': '황혼', 'night': '밤'}
 WX_KO = {'random': '랜덤', 'clear': '맑음', 'rain': '비', 'fog': '안개', 'snow': '눈'}
 WHERE_KO = {'random': '랜덤', 'open': '개활지', 'tunnel_entry': '터널 입구', 'tunnel': '터널 안', 'tunnel_exit': '터널 출구'}
@@ -145,7 +149,9 @@ class CondMixin:
                           f'{p.design_speed} km/h · 터널 ≤{p.tunnels} · 차선 불량 {p.wear:.0%}'),
             ('burst', '사고', f'{SIDE_KO.get(sp.side, sp.side)} · '
                               f'{"랜덤" if sp.lane < 0 else f"{sp.lane + 1}차로"} · '
-                              f'{WHERE_KO.get(sp.accident_where, sp.accident_where)} · 사고 차량 {sp.accident_vehicles}대'
+                              f'{WHERE_KO.get(sp.accident_where, sp.accident_where)} · '
+                              f'{ATYPE_KO.get(sp.accident_type, sp.accident_type)} · 사고 차량 {sp.accident_vehicles}대'
+                              + (f' · 보행자 {"랜덤" if sp.pedestrians < 0 else f"{sp.pedestrians}명"}' if sp.pedestrians else '')
                               + (' · 시나리오 시드 랜덤' if self.rand_scn or sp.seed < 0 else f' · 시드 {sp.seed}')),
             ('car', '교통', (f'켬 · {tp.flow:.0f} 대/h/차로 · SCC {tp.p_scc:.0%}' if tp.enabled else '끔 (차량 없음)')),
             ('cloud', '환경', f'{TIME_KO.get(e.time_of_day)} · {WX_KO.get(e.weather)} · '

@@ -12,14 +12,15 @@ import time
 from dataclasses import fields
 
 from .evaluate import CRITERIA_DEFAULT_VALUE, CRITERIA_KO
-from .modes import INT_CRITERIA, MODE_KO
+from .modes import ATYPE_KO, INT_CRITERIA, MODE_KO
 from .session import PRESETS, SENSORS_KO
 
 # Font Awesome 6 Solid 코드
 I = dict(road=0xf018, burst=0xf5e1, car=0xf5e4, cloud=0xf743, eye=0xf06e, floppy=0xf0c7, grip=0xf7a5, info=0xf05a,
          keyboard=0xf11c, user=0xf007, gauge=0xf625, dish=0xf7c0, layer=0xf5fd, sliders=0xf1de, video=0xf03d,
          terminal=0xf120, download=0xf019, file_export=0xf56e, folder=0xf07c, map=0xf279, rotate=0xf2f9,
-         clipboard=0xf46c, check=0xf058, bolt=0xf0e7, plug=0xf1e6, trash=0xf1f8, plus=0xf067, stopwatch=0xf2f2)
+         clipboard=0xf46c, check=0xf058, bolt=0xf0e7, plug=0xf1e6, trash=0xf1f8, plus=0xf067, stopwatch=0xf2f2,
+         sun=0xf185, moon=0xf186)
 
 # 화면 표시 기본값 (Godot 쪽 show 와 같은 키)
 VIEW_DEFAULT = dict(pandar=True, tele=True, radar=True, radar_fov=False, gnss=True, camera=True, labels=True,
@@ -80,12 +81,26 @@ def tabs(be, mode=None, start=False):
             _b('app.rand_scn', '재시작할 때마다 시나리오 시드 랜덤'),
             dict(t='choice', k='scn.side', label='방향', opts=[['random', '랜덤'], ['down', '하행'], ['up', '상행']]),
             dict(t='choice', k='scn.lane', label='비콘 차로', opts=[[-1, '랜덤']] + [[k, f'{k + 1}차로'] for k in range(lanes)]),
-            _i('scn.accident_vehicles', '사고 차량', 1, 3, slider=True),
+            dict(t='choice', k='scn.accident_type', label='사고 유형',
+                 opts=[['basic', '단독 사고 (기본)'], ['chain', '연쇄 추돌'], ['truck', '대형차가 차로 막음'], ['random', '랜덤']],
+                 tip='연쇄 추돌: 비콘 차로에 2~5대가 줄줄이. 대형차: 트럭이 비스듬히(15~35°) 서서 옆 차로까지 침범'),
+            _i('scn.accident_vehicles', '사고 차량', 1, 5, slider=True, tip='단독 사고는 최대 3대, 연쇄 추돌은 2~5대'),
+            _i('scn.pedestrians', '보행자 (사고 운전자)', -1, 4, slider=True, tip='-1 = 랜덤 0~2명. 대부분 길어깨, 일부는 차로 위 사고 차 옆'),
+            _f('scn.p_ped_in_lane', '차로 위 보행자 확률', 0, 1, '%.2f', 0.05),
             dict(t='choice', k='scn.accident_where', label='사고 위치',
                  opts=[['random', '랜덤'], ['open', '개활지'], ['tunnel_entry', '터널 입구'], ['tunnel', '터널 안'],
                        ['tunnel_exit', '터널 출구']]),
-            _b('scn.beacon_light', '비콘 경광등 켜기', tip='끄면 야간에 운전자가 비콘을 훨씬 늦게 인지합니다 (인지 거리 0.9배 → 0.35배)')],
-            'amber'),
+            ], 'amber'),
+        _card('비콘 조명', 'sun', [
+            _b('scn.beacon_light', '경광등 (적·청) 켜기', tip='끄면 야간에 운전자가 비콘을 훨씬 늦게 인지합니다 (인지 거리 0.9배 → 0.35배)'),
+            dict(t='choice', k='scn.warning_pattern', label='점멸', enable='scn.beacon_light',
+                 opts=[['alternate', '적·청 번갈아'], ['sync', '동시 점멸'], ['steady', '계속 켜짐']]),
+            _f('scn.flash_hz', '점멸 주기', 0.5, 5.0, '%.1f Hz', 0.1, enable='scn.beacon_light',
+               tip='적·청 한 번씩이 1 주기. 카메라가 10 Hz 라 5 Hz 를 넘으면 영상에서 깜빡임이 제대로 안 찍힘'),
+            dict(t='seg', k='scn.searchlight', opts=[['auto', '서치라이트 자동'], ['on', '켜기'], ['off', '끄기']]),
+            dict(t='note', text='이 카드는 실행 중 바로 반영됩니다 (재시작 불필요). 오른쪽 비콘 패널의 경광등·서치라이트 버튼(L·K 키)으로도 켜고 끕니다. '
+                              '자동: 황혼·밤·터널·짙은 안개에서 켬. 상위 제어기는 /beacon/searchlight, '
+                              '/beacon/warning_light (std_msgs/Bool) 로 직접 켜고 끔. 세기·빔 각도는 config/sim.yaml beacon_lights')]),
         _card('센서타워', 'layer', [
             dict(t='note', text='비콘은 접힌 채로 배치되고 시작하면 자동으로 펴집니다. 재생 바의 "펴기/접기" 버튼이나 '
                               'U 키로 언제든 펴고 접습니다 (상위 제어기는 /beacon/deploy, std_msgs/Bool)'),
@@ -133,6 +148,20 @@ def tabs(be, mode=None, start=False):
             dict(t='group', label='랜덤 확률', items=[
                 _f('env.p_night', '밤', 0, 1), _f('env.p_dusk', '황혼', 0, 1), _f('env.p_rain', '비', 0, 1),
                 _f('env.p_fog', '안개', 0, 1), _f('env.p_snow', '눈', 0, 1)])], 'teal'),
+        _card('야간 조도 (황혼·밤)', 'moon', [
+            _b('env.moon_rand', '달빛 랜덤'),
+            _f('env.moon', '달빛', 0, 1, '%.2f', 0.05, enable='!env.moon_rand',
+               tip='0 = 그믐(달 없음), 1 = 보름'),
+            _b('env.sky_glow_rand', '하늘 밝음 랜덤'),
+            _f('env.sky_glow', '하늘 밝음', 0, 1, '%.2f', 0.05, enable='!env.sky_glow_rand',
+               tip='도시 불빛이 하늘에 비친 정도. 0 = 산간, 1 = 도심 근처'),
+            dict(t='seg', k='env.street_lights', opts=[['random', '가로등 랜덤'], ['all', '전 구간'], ['partial', '일부'],
+                                                      ['none', '없음']]),
+            _b('env.street_coverage_rand', '가로등 구간 비율 랜덤'),
+            _f('env.street_coverage', '가로등 구간 비율', 0, 1, '%.2f', 0.05, enable='!env.street_coverage_rand',
+               tip='"일부" 일 때 가로등이 있는 구간의 비율 (400~1500 m 덩어리, 터널 입출구 앞뒤는 항상)'),
+            _b('env.lamp_fail_rand', '고장 가로등 랜덤'),
+            _f('env.lamp_fail', '고장 가로등', 0, 0.5, '%.2f', 0.01, enable='!env.lamp_fail_rand')], 'muted'),
         dict(t='note', text='변경은 재시작(R) 시 반영'),
         _card('현재 환경', 'info', [dict(t='info', id='env')], 'muted'),
     ]
@@ -220,6 +249,9 @@ def tab_test(be):
     ]
 
 
+RAND_KEYS = {'moon': 0.5, 'sky_glow': 0.2, 'street_coverage': 0.5, 'lamp_fail': 0.05}   # -1 = 랜덤, 끌 때 기본값
+
+
 def values(be):
     out = {}
     for g, attr in GROUPS.items():
@@ -229,6 +261,11 @@ def values(be):
     out['env.intensity_rand'] = be.eparams.intensity < 0
     if be.eparams.intensity < 0:
         out['env.intensity'] = 0.5
+    for k, dflt in RAND_KEYS.items():
+        v = getattr(be.eparams, k)
+        out[f'env.{k}_rand'] = v < 0
+        if v < 0:
+            out[f'env.{k}'] = dflt
     out.update({'app.rand_map': be.rand_map, 'app.rand_scn': be.rand_scn, 'key.speed': be.key_speed,
                 'key.yaw': be.key_yaw, 'export.dir': be.export_dir, 'export.pcd': be.export_pcd,
                 'export.busy': be.export_busy()})
@@ -267,6 +304,9 @@ def _coerce(cur, v):
     return v if isinstance(v, str) else str(v)
 
 
+LIVE_LIGHT_KEYS = ('beacon_light', 'warning_pattern', 'flash_hz', 'searchlight')
+
+
 def set_value(be, key, v):
     """값 하나 바꾸기. 반환: 탭 정의를 다시 보내야 하면 True (차로 수 → 비콘 차로 목록)."""
     grp, _, name = key.partition('.')
@@ -274,6 +314,9 @@ def set_value(be, key, v):
         obj = getattr(be, GROUPS[grp])
         if grp == 'env' and name == 'intensity_rand':
             obj.intensity = -1.0 if v else 0.5
+            return False
+        if grp == 'env' and name.endswith('_rand') and name[:-5] in RAND_KEYS:
+            setattr(obj, name[:-5], -1.0 if v else RAND_KEYS[name[:-5]])
             return False
         if not hasattr(obj, name):
             return False
@@ -288,6 +331,10 @@ def set_value(be, key, v):
             return True
         if grp == 'scn' and name == 'seed':
             be.rand_scn = False
+        if grp == 'scn' and name in LIVE_LIGHT_KEYS and getattr(be, 'engine', None) is not None:
+            be.engine.set_light_params(**{name: getattr(obj, name)})       # 조명은 재시작 없이 바로
+            if isinstance(getattr(be, 'applied', None), dict) and 'scenario' in be.applied:
+                be.applied['scenario'][name] = getattr(obj, name)          # 이미 반영됨 → '변경 사항(재시작)'에 안 뜸
         return False
     if grp == 'test':
         _set_test(be, name, v)
@@ -428,9 +475,13 @@ def info(be):
                       f'터널 {tun} · 차선 불량 {sm["lane_wear_pct"]}%']
     if be.engine is not None:
         sm = be.engine.scn.summary()
-        out['scn'] = [f'{sm["side"]} {sm["lane"]}차로 · 사고 s = {sm["accident_s"]:.0f} m · 사고 차량 {sm["accident_vehicles"]}대',
+        out['scn'] = [f'{sm["side"]} {sm["lane"]}차로 · 사고 s = {sm["accident_s"]:.0f} m · '
+                      f'{ATYPE_KO.get(sm.get("accident_type"), "")} 사고 차량 {sm["accident_vehicles"]}대'
+                      + (f' · 보행자 {sm["pedestrians"]}명' if sm.get('pedestrians') else ''),
                       f'시드 {be.engine.scn.sp.seed}']
         env = be.engine.env
         out['env'] = [env.label(), f'카메라 대기 산란 {env.fog_dist:.0f} m · LiDAR 감쇠 α {env.alpha:.4f}/m',
                       f'허위점 {env.false_rate:.4f} · 노면 젖음 {env.wet:.2f} · 레이더 SNR −{env.radar_snr_loss:.1f} dB']
+        if env.night_label():
+            out['env'].append(env.night_label())
     return out
