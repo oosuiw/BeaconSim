@@ -520,7 +520,13 @@ class App(StartMixin):
         from .common import CACHE_DIR
 
         def job():
-            out = os.path.join(CACHE_DIR, 'godot_scene', str(os.getpid()))
+            import shutil
+            root = os.path.join(CACHE_DIR, 'godot_scene')
+            if os.path.isdir(root):                       # 이전 실행이 남긴 장면 (약 40MB씩) 정리
+                for d in os.listdir(root):
+                    if d != str(os.getpid()):
+                        shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+            out = os.path.join(root, str(os.getpid()))
             _, js, origin = godot_link.export_scene(eng, out, self.base_cfg['camera'], cam.Wr, cam.Hr, cam.K[1, 1])
             return eng, godot_link.GodotLink(js, origin, self.T_b_opt, hidden=True, log=self.log)
         self.log('Godot 카메라 렌더러 준비 중...')
