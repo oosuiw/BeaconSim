@@ -222,8 +222,9 @@ def project_dir():
     from .common import CACHE_DIR
     dst = os.path.join(CACHE_DIR, 'godot_project')
     os.makedirs(dst, exist_ok=True)
-    for f in ('project.godot', 'main.tscn', 'main.gd'):
-        shutil.copy2(os.path.join(GODOT_DIR, f), os.path.join(dst, f))
+    for f in os.listdir(GODOT_DIR):
+        if f.endswith(('.godot', '.tscn', '.gd')):
+            shutil.copy2(os.path.join(GODOT_DIR, f), os.path.join(dst, f))
     return dst
 
 
@@ -349,3 +350,26 @@ class GodotLink:
 def camera_T_b_opt(robot_cfg):
     _, T_bc = sensor_mounts(robot_cfg)['camera']
     return T_bc @ T_CAMLINK_OPTICAL
+
+
+class CameraModel:
+    """Arducam 모델의 오버스캔 핀홀 크기와 plumb_bob 왜곡 remap (render.CameraRenderer 와 같은 계산, GL 불필요)."""
+
+    def __init__(self, cam_cfg):
+        import cv2
+        self.W, self.H = cam_cfg['width'], cam_cfg['height']
+        self.K = np.array(cam_cfg['K'], float).reshape(3, 3)
+        self.D = np.array(cam_cfg['D'], float)
+        fx, fy = self.K[0, 0], self.K[1, 1]
+        uu, vv = np.meshgrid(np.arange(self.W, dtype=np.float64), np.arange(self.H, dtype=np.float64))
+        pts = np.stack([uu.ravel(), vv.ravel()], -1)[:, None, :]
+        und = cv2.undistortPoints(pts, self.K, self.D).reshape(self.H, self.W, 2)
+        mx, my = np.abs(und[..., 0]).max(), np.abs(und[..., 1]).max()
+        self.Wr, self.Hr = int(2 * np.ceil(fx * mx + 4)), int(2 * np.ceil(fy * my + 4))
+        self.map_x = (fx * und[..., 0] + self.Wr / 2.0).astype(np.float32)
+        self.map_y = (fy * und[..., 1] + self.Hr / 2.0).astype(np.float32)
+        self.hfov = 2 * np.degrees(np.arctan(und[self.H // 2, -1, 0]))
+
+    def distort(self, raw):
+        import cv2
+        return cv2.remap(raw, self.map_x, self.map_y, cv2.INTER_LINEAR)

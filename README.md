@@ -192,3 +192,12 @@ Copyright (c) 2026 BeaconSim authors. All rights reserved. (LICENSE 참고)
   Godot 은 1x1 투명 창으로 따로 실행되고(최소화하면 렌더링이 멈춤), 영상은 /dev/shm 으로 받는다. 맵·시나리오를 다시 만들면 약 5초 동안 기본 렌더러.
 - AppImage: `WITH_GODOT=1 packaging/build_appimage.sh` 로 Godot 실행 파일 포함. 없으면 `~/.config/beaconsim/godot/` 에 두면 된다.
 - 아직: 헤드리스(sim_core + camera_node) 경로는 기본 렌더러, 차량 창문·번호판 등 세부 모델 없음
+
+## Godot 프런트엔드 (개발 중, B안)
+화면·UI 를 Godot 4 로 옮기는 중. 파이썬 백엔드(`beacon_sim/server.py`)가 엔진·센서·ROS 를 맡고, Godot 창(`godot/client.gd`)과 TCP 로 연결한다.
+- 실행: `./run_godot.sh` (옵션: `--no-ros`, `--size 3440x1400`, `--set env.weather=rain`)
+- 1단계(완료): 3D 월드 고품질 렌더, 마우스 시점(좌 회전·우 이동·휠 확대, F 따라가기, 1/2/3 시점), 방향키 비콘 주행,
+  Space/R/G, Pandar·Tele·레이더(클러스터·앞면 판)·GNSS·SCC 표시, 재생 바·상황판·이벤트·카메라 패널,
+  ROS 카메라 토픽(Godot 렌더 → 렌즈 왜곡 → 발행)
+- 다음: 2단계 사이드바(맵·시나리오·교통·환경·보기·저장), 3단계 시작 화면·시험·회귀, 4단계 AppImage 전환
+- 그동안 기존 GUI(`run_app.sh`)는 그대로 사용 가능
