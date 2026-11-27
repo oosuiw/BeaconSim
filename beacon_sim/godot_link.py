@@ -328,7 +328,7 @@ class GodotLink:
         self.seq += 1
         veh = [[int(i)] + xform_g(traffic_T[i], self.origin) for i in np.nonzero(active)[0]]
         T_b_opt, links = self.T_b_opt, {}
-        if self.kin is not None and mast_q is not None:      # 접이식 마스트: 카메라·부품이 각도를 따라감
+        if self.kin is not None and mast_q is not None:      # 접이식 센서타워: 카메라·부품이 각도를 따라감
             T_b_opt = self.kin.mount('camera', mast_q)[1] @ T_CAMLINK_OPTICAL
             links = robot_links_g(self.kin, mast_q)
         return {'type': 'state', 'seq': self.seq, 't': round(float(eng_t), 3),
@@ -400,7 +400,7 @@ class GodotLink:
 
 
 def robot_links_g(kin, q):
-    """움직이는 링크(마스트·크랭크 …) → Godot 로컬 변환 (비콘 기준, 12개 실수)"""
+    """움직이는 링크(센서타워·크랭크 …) → Godot 로컬 변환 (비콘 기준, 12개 실수)"""
     if not kin.has_mast:
         return {}
     z = np.zeros(3)

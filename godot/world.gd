@@ -133,7 +133,7 @@ func set_vehicles(idx: PackedInt32Array, T: PackedFloat32Array) -> void:
 func set_robot(T, links = null) -> void:
 	if robot:
 		robot.transform = xf(T)
-		if typeof(links) == TYPE_DICTIONARY:          # 접이식 마스트·링크 (비콘 기준 로컬 변환)
+		if typeof(links) == TYPE_DICTIONARY:          # 접이식 센서타워·링크 (비콘 기준 로컬 변환)
 			for name in links:
 				var n := robot.find_child("link_" + str(name), false, false) as Node3D
 				if n:

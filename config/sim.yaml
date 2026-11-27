@@ -61,6 +61,27 @@ environment:
   p_snow: 0.1
 
 # u-blox ZED-F9P 모델 (gnss.GnssParams)
+drive:                    # 좌우 모터 차동(스키드 스티어) 모델 — (임시) 값은 실기 사양으로 고칠 것
+  gear_ratio: 10.0          # (임시) 모터 → 바퀴 감속비
+  counts_per_motor_rev: 4096.0   # (임시) 엔코더 카운트 / 모터 1회전
+  motor_max_rpm: 3000.0     # (임시)
+  tau: 0.12                 # 바퀴 속도 응답 시정수 [s]
+  accel_max: 1.5            # 바퀴 선가속 한계 [m/s²]
+  track_eff_factor: 1.35    # 스키드 스티어: 실제 회전 = 바퀴 속도차 / (윤거 × 이 값)
+  odom_track_factor: 1.35   # 오도메트리 계산용 (보정된 값이면 위와 같게)
+  slip_std: 0.01            # 바퀴 접지 속도 잡음 (비율)
+  wait_tower_up: true       # 자율(ROS) 주행 명령은 센서타워가 다 펴진 뒤에 (실기 AUTO 동작). 키보드는 수동이라 허용
+  odom_rate_hz: 50.0
+imu:
+  enabled: true
+  topic: /sensing/imu/imu_raw
+  frame_id: imu_link
+  rate_hz: 100.0
+  xyz: [0.0, 0.0, 0.25]     # (임시) base_link 기준 장착 위치
+  gyro_noise: 0.002         # rad/s
+  gyro_bias_walk: 2.0e-5
+  accel_noise: 0.05         # m/s²
+  accel_bias_walk: 5.0e-4
 gnss:
   enabled: true
   topic: /sensing/gnss/fix
@@ -81,7 +102,7 @@ sim:
   map_frame: map
   base_frame: base_link
   cmd_vel_topic: /cmd_vel
-  cmd_vel_timeout: 0.5
+  cmd_vel_timeout: 0.3     # 실기 제어기: 명령 300 ms 끊기면 정지
   max_linear: 3.0         # m/s
   max_angular: 1.5        # rad/s
   odom_topic: /ground_truth/odom
@@ -90,8 +111,9 @@ sim:
   traffic_topic: /sim/traffic      # PoseArray, 슬롯 순서 고정 (비활성 슬롯은 z=-1000)
   events_topic: /sim/events        # JSON: 인지/감속/차로변경/추돌
   scenario_topic: /sim/scenario    # JSON (latched): 사고 위치, 비콘 배치, 환경
-  deploy_topic: /beacon/deploy     # std_msgs/Bool: true 마스트 펴기, false 접기 (상위 제어기)
-  joint_states_topic: /joint_states   # sensor_msgs/JointState: mast_joint (0 접힘 ~ 펴짐 각도)
+  wheel_odom_topic: /beacon/wheel_odom   # nav_msgs/Odometry (엔코더 적분, frame odom → base_link, TF 는 안 냄)
+  deploy_topic: /beacon/deploy     # std_msgs/Bool: true 센서타워 펴기, false 접기 (상위 제어기)
+  joint_states_topic: /joint_states   # sensor_msgs/JointState: sensor_tower_joint (0 접힘 ~ 펴짐 각도)
 
 pandar40p:
   enabled: true

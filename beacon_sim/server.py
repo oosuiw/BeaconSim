@@ -776,7 +776,7 @@ class Server:
         T_wb = snap['T_wb']
         q = snap['mast_q']
         kin = e.kin
-        T_b_opt = kin.mount('camera', q)[1] @ T_CAMLINK_OPTICAL          # 마스트를 따라감
+        T_b_opt = kin.mount('camera', q)[1] @ T_CAMLINK_OPTICAL          # 센서타워를 따라감
         mast = {'has': kin.has_mast, 'frac': round(float(snap['mast_frac']), 3),
                 'target': 1 if snap['mast_target'] > 0 else 0} if kin.has_mast else None
         msg = {'type': 'state', 'world': be.world_seq, 't': snap['t'], 'paused': be.paused, 'rtf': be.rtf,
@@ -786,7 +786,7 @@ class Server:
                'n_active': int(len(act)), 'scc_follow': int((snap['scc_target'] == -2).sum()),
                'in_tunnel': bool(e.model.in_tunnel(snap['s_b'], margin=30)),
                'robot': xform_g(T_wb, o), 'cam': xform_g(T_wb @ T_b_opt, o, cam=True), 'gnss': gj,
-               'links': robot_links_g(kin, q), 'mast': mast,
+               'links': robot_links_g(kin, q), 'mast': mast, 'odom_err': e.odom_error(),
                'radar_T': xform_g(kin.mount('ars408', q)[1], np.zeros(3)) if 'ars408' in kin.sensors else None,
                'ros': bool(be.ros is not None and be.ros.ok)}
         self.send(msg, {'veh_idx': act.astype('<i4'), 'veh_T': xforms_g(snap['traffic_T'][act], o),

@@ -1,13 +1,13 @@
-"""비콘 로봇 기구학: 차체(base_link) + 접이식 마스트(mast_link, 회전 관절 1개) + 화면용 링크(크랭크·연결 링크).
+"""비콘 로봇 기구학: 차체(base_link) + 접이식 센서타워(sensor_tower_link, 회전 관절 1개) + 화면용 링크(크랭크·연결 링크).
 
 robot.yaml
-  mast:            (없으면 마스트 없는 예전 로봇: 모든 센서가 base_link 에 고정)
+  sensor_tower:    (없으면 센서타워 없는 예전 로봇: 모든 센서가 base_link 에 고정)
     pivot, axis    base_link 기준 접이 축
     deployed       펴짐 각도 [rad] (0 = 접힘)
     deploy_time    접힘 → 펴짐 시간 [s]
-  sensors.<이름>.parent: mast_link | base_link (기본 base_link)
+  sensors.<이름>.parent: sensor_tower_link | base_link (기본 base_link)
 관절 각도 q: 0 = 접힘, deployed = 펴짐.  T_base_mast(q) = 이동(pivot) · 회전(axis, q - deployed)
-→ 펴짐 상태에서 mast_link 축은 base_link 축과 같다 (센서 rpy 는 펴짐 기준).
+→ 펴짐 상태에서 sensor_tower_link 축은 base_link 축과 같다 (센서 rpy 는 펴짐 기준).
 """
 import json
 import os
@@ -15,6 +15,11 @@ import os
 import numpy as np
 
 from .common import ROBOT_PART_COLORS, make_T, robot_mesh_dir
+
+
+def tower_cfg(robot_cfg):
+    """robot.yaml 의 센서타워 설정 (예전 이름 'mast' 도 읽음). 없으면 None."""
+    return robot_cfg.get('sensor_tower') or robot_cfg.get('mast') or None
 
 
 def rot(axis, ang):
@@ -26,10 +31,10 @@ def rot(axis, ang):
 
 class RobotKin:
     def __init__(self, robot_cfg, links_meta=None):
-        m = robot_cfg.get('mast') or None
+        m = tower_cfg(robot_cfg)
         self.has_mast = m is not None
-        self.mast_frame = (m or {}).get('frame_id', 'mast_link')
-        self.joint = (m or {}).get('joint', 'mast_joint')
+        self.mast_frame = (m or {}).get('frame_id', 'sensor_tower_link')
+        self.joint = (m or {}).get('joint', 'sensor_tower_joint')
         self.pivot = np.asarray((m or {}).get('pivot', [0, 0, 0]), float)
         self.axis = np.asarray((m or {}).get('axis', [0, 1, 0]), float)
         self.q_dep = float((m or {}).get('deployed', 0.0))

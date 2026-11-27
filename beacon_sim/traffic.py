@@ -43,8 +43,8 @@ class ScenarioParams:
     beacon_light: bool = True     # 비콘 경광등 (야간 인지 거리에 영향)
     accident_vehicles: int = 2    # 1~3
     start_gap: float = 6.0        # 비콘 배치 위치: 사고 차량 후미에서 상류로 [m]
-    mast_auto: bool = True        # 접이식 마스트: mast_deploy_at 에 자동으로 펴기 (끄면 버튼·U 키·/beacon/deploy 로만)
-    mast_deploy_at: float = 0.0   # 자동 펴기 시작 시각 [s]
+    tower_auto: bool = True        # 접이식 센서타워: tower_deploy_at 에 자동으로 펴기 (끄면 버튼·U 키·/beacon/deploy 로만)
+    tower_deploy_at: float = 0.0   # 자동 펴기 시작 시각 [s]
 
     def to_dict(self):
         return asdict(self)

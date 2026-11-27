@@ -975,7 +975,7 @@ func _build_playbar() -> void:
 	var b2 := K.btn(K.ic(K.I_MAP), "맵 재생성 (G)")
 	b2.pressed.connect(func(): _on_action("regen_map"))
 	h.add_child(b2)
-	btn_mast = K.btn("", "마스트(센서함) 펴기 / 접기 (U) — 상위 제어기는 /beacon/deploy")
+	btn_mast = K.btn("", "센서타워 펴기 / 접기 (U) — 상위 제어기는 /beacon/deploy")
 	btn_mast.pressed.connect(func(): _on_action("mast"))
 	btn_mast.visible = false
 	h.add_child(btn_mast)
@@ -1031,6 +1031,10 @@ func _build_dashboard() -> void:
 	mc.visible = false
 	dash["mast"] = mc
 	v.add_child(mc)
+	var oc := K.label("", K.MUTED, 12)
+	oc.tooltip_text = "휠 오도메트리(엔코더 적분, /beacon/wheel_odom)와 실제 위치의 차이 — 미끄럼·스키드 스티어 오차"
+	dash["odom"] = oc
+	v.add_child(oc)
 	var g := K.chip("", K.OK)
 	dash["gnss"] = g
 	v.add_child(g)
@@ -1133,7 +1137,7 @@ func _build_help() -> void:
 	for it in [["↑ / ↓", "비콘 전진 / 후진 (ROS /cmd_vel이 오면 그쪽 우선)"], ["← / →", "비콘 회전"],
 			["좌클릭 드래그", "시점 회전"], ["우클릭 드래그", "시점 이동 (따라가기 해제)"], ["휠", "확대 / 축소"],
 			["F", "비콘 따라가기"], ["1  2  3", "비콘 / 전체 / 터널 시점"], ["Space", "일시정지 / 재생"],
-			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["U", "마스트(센서함) 펴기 / 접기"], ["F1", "도움말"]]:
+			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["U", "센서타워 펴기 / 접기"], ["F1", "도움말"]]:
 		var c := K.chip(it[0], K.ACCENT)
 		c.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		c.custom_minimum_size = Vector2(130, 0)
@@ -1176,7 +1180,10 @@ func _update_ui() -> void:
 		dash["damage"].visible = true
 	else:
 		dash["damage"].visible = false
-	# 접이식 마스트
+	var oe = st.get("odom_err")
+	if typeof(oe) == TYPE_ARRAY:
+		dash["odom"].text = "휠 오도메트리 오차 %.2f m · %.1f°" % [float(oe[0]), rad_to_deg(float(oe[1]))]
+	# 접이식 센서타워
 	var ms = st.get("mast")
 	var has_mast := typeof(ms) == TYPE_DICTIONARY
 	btn_mast.visible = has_mast
@@ -1187,13 +1194,13 @@ func _update_ui() -> void:
 		var txt: String
 		var col: Color
 		if frac >= 0.999:
-			txt = "마스트 펴짐 — 작업 자세"
+			txt = "센서타워 펴짐 — 작업 자세"
 			col = K.OK
 		elif frac <= 0.001 and not deploying:
-			txt = "마스트 접힘"
+			txt = "센서타워 접힘"
 			col = K.MUTED
 		else:
-			txt = "마스트 %s %d%%" % ["펴는 중" if deploying else "접는 중", int(round(frac * 100))]
+			txt = "센서타워 %s %d%%" % ["펴는 중" if deploying else "접는 중", int(round(frac * 100))]
 			col = K.WARN
 		dash["mast"].text = K.ic(K.I_UP if deploying else K.I_DOWN) + "  " + txt
 		K.set_chip_color(dash["mast"], col)

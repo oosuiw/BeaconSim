@@ -51,9 +51,9 @@ python3 tools/build_robot.py        # → robot/meshes/*, config/robot.yaml (센
 .venv/bin/pip install cadquery-ocp      # STEP 읽기 (OpenCascade), 모델 만들 때만 필요
 .venv/bin/python tools/build_robot.py --step-up "BeaconV6/비콘 최종 (업).stp" --step-down "BeaconV6/비콘 최종 (다운).stp" --force
 ```
-- 두 파일에서 움직이는 부품을 찾아 마스트 관절(`mast_joint`, 0 = 접힘)과 센서 위치(`mast_link` 기준)를 `config/robot.yaml` 에 쓴다
+- 두 파일에서 움직이는 부품을 찾아 센서타워 관절(`sensor_tower_joint`, 0 = 접힘)과 센서 위치(`sensor_tower_link` 기준)를 `config/robot.yaml` 에 쓴다
 - 비콘은 접힌 채로 시작한다. 재생 바 "펴기" 버튼 / **U** 키, 상위 제어기는 `/beacon/deploy` (std_msgs/Bool).
-  관절 상태 `/joint_states`, TF `base_link → mast_link → 센서`. 시나리오 탭에서 자동 펴기(회귀 시험용)를 켤 수 있다
+  관절 상태 `/joint_states`, TF `base_link → sensor_tower_link → 센서`. 시나리오 탭에서 자동 펴기(회귀 시험용)를 켤 수 있다
 
 ## 실행
 
@@ -184,6 +184,11 @@ source /opt/ros/humble/setup.bash && .venv/bin/python tools/run_scenarios.py sce
 | `/sensing/camera/arducam/{image_raw,camera_info}` | Image rgb8 + CameraInfo | `camera_optical_link` |
 | `/sensing/gnss/fix` | NavSatFix (status: GBAS=RTK FIX, SBAS=FLOAT, FIX=SINGLE) | `gnss_link` |
 | `/ground_truth/odom`, TF `map→base_link` | 정답 포즈 | |
+| `/beacon/wheel_odom` | Odometry, 엔코더 적분 (50 Hz, TF 없음) | `odom → base_link` |
+| `/sensing/imu/imu_raw` | Imu, 각속도·가속도 + 잡음·바이어스 (100 Hz) | `imu_link` |
+| `/joint_states` | 좌우 바퀴 + `sensor_tower_joint` | |
+
+주행 모델(모터 응답·스키드 스티어·미끄럼)과 IMU 의 임시 값은 [TODO.md](TODO.md) 참고 (실기 값으로 고칠 것).
 
 라벨 id: 1 road, 2 lane_white, 3 lane_yellow, 4 guardrail, 5 barrier, 6 terrain, 7 tunnel, 8 vehicle, 9 robot, 10 sign, 11 pole, 12 accident
 

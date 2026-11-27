@@ -20,8 +20,8 @@ GROUP_KO = {'map': '맵', 'scenario': '시나리오', 'traffic': '교통', 'envi
 KEY_KO = {'seed': '시드', 'length': '길이', 'lanes': '차로 수', 'design_speed': '설계속도', 'tunnels': '터널',
           'gantries': '갠트리', 'wear': '차선 불량', 'wear_faded': '희미함', 'wear_broken': '끊김', 'wear_sparse': '희소',
           'side': '방향', 'lane': '비콘 차로', 'accident_s': '사고 위치(s)', 'accident_where': '사고 위치',
-          'accident_vehicles': '사고 차량', 'beacon_light': '경광등', 'mast_auto': '마스트 자동 펴기',
-          'mast_deploy_at': '마스트 펴기 시각', 'start_gap': '비콘 간격', 'enabled': '교통 켜기',
+          'accident_vehicles': '사고 차량', 'beacon_light': '경광등', 'tower_auto': '센서타워 자동 펴기',
+          'tower_deploy_at': '센서타워 펴기 시각', 'start_gap': '비콘 간격', 'enabled': '교통 켜기',
           'flow': '교통량', 'flow_opposite': '반대 교통량', 'speed_mean': '평균 속도', 'truck_ratio': '대형차',
           'p_lane_change': '차로변경', 'p_brake': '감속', 'p_crash': '무반응', 'p_scc': 'SCC 비율',
           'time_of_day': '시간대', 'weather': '날씨', 'intensity': '강도', 'duration': '시험 시간',
@@ -33,13 +33,18 @@ WHERE_KO = {'random': '랜덤', 'open': '개활지', 'tunnel_entry': '터널 입
 SIDE_KO = {'random': '랜덤', 'down': '하행', 'up': '상행'}
 
 
-SETTINGS_VER = 2       # app.json 형식: 2 = 마스트 자동 펴기 기본 켬
+SETTINGS_VER = 2       # app.json 형식: 2 = 센서타워 자동 펴기 기본 켬
 
 
 def migrate_settings(d):
     """예전 app.json → 지금 기본값 (한 번만). 반환: 같은 dict"""
+    sc = d.get('scenario')
+    if isinstance(sc, dict):                         # 예전 키 이름 (마스트 → 센서타워)
+        for old, new in (('mast_auto', 'tower_auto'), ('mast_deploy_at', 'tower_deploy_at')):
+            if old in sc:
+                sc.setdefault(new, sc.pop(old))
     if int(d.get('settings_ver', 0)) < 2 and isinstance(d.get('scenario'), dict):
-        d['scenario']['mast_auto'] = True          # 자동 펴기를 기본으로 바꿈 (v0.3.x)
+        d['scenario']['tower_auto'] = True          # 자동 펴기를 기본으로 바꿈 (v0.3.x)
     d['settings_ver'] = SETTINGS_VER
     return d
 

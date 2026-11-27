@@ -1137,7 +1137,7 @@ class App(StartMixin):
         self.cam_next_t = snap['t'] + 1.0 / self.base_cfg['camera']['rate_hz']
         T_wb = snap['T_wb']
         veh = list(self.engine.accident) + list(zip(self.engine.traffic.specs, snap['traffic_T']))
-        T_b_opt = self.engine.kin.mount('camera', snap.get('mast_q', 0.0))[1] @ T_CAMLINK_OPTICAL   # 마스트를 따라감
+        T_b_opt = self.engine.kin.mount('camera', snap.get('mast_q', 0.0))[1] @ T_CAMLINK_OPTICAL   # 센서타워를 따라감
         img = self.camera.render(self.cam_scene, T_wb @ T_b_opt, T_wb, veh, self.engine.env)
         self._deliver_camera(img, snap['t'])
 

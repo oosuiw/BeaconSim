@@ -14,7 +14,7 @@ from nav_msgs.msg import Odometry
 from radar_msgs.msg import RadarReturn, RadarScan, RadarTrack, RadarTracks
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import JointState, NavSatFix, NavSatStatus, PointCloud2, PointField
+from sensor_msgs.msg import Imu, JointState, NavSatFix, NavSatStatus, PointCloud2, PointField
 from std_msgs.msg import Bool, ColorRGBA, Header, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 from unique_identifier_msgs.msg import UUID
@@ -129,10 +129,12 @@ class RosBridge:
         self.stfb = StaticTransformBroadcaster(node) if static_tf else None
         node.create_subscription(Twist, sc['cmd_vel_topic'],
                                  lambda m: self.e.set_cmd('ros', m.linear.x, m.angular.z), 10)
-        # 접이식 마스트: 펴기/접기 명령, 관절 상태
+        # 접이식 센서타워: 펴기/접기 명령, 관절 상태
         node.create_subscription(Bool, sc.get('deploy_topic', '/beacon/deploy'),
                                  lambda m: self.e.set_mast(bool(m.data), 'ros'), 10)
         self.pub['joint_states'] = cp(JointState, sc.get('joint_states_topic', '/joint_states'), 10)
+        self.pub['wheel_odom'] = cp(Odometry, sc.get('wheel_odom_topic', '/beacon/wheel_odom'), 10)
+        self.pub['imu'] = cp(Imu, cfg.get('imu', {}).get('topic', '/sensing/imu/imu_raw'), 50)
         self.joint_every = max(1, int(round(0.02 / engine.DT)))          # 50 Hz
         cam_hz = cfg['camera']['rate_hz']
         self.traffic_every = max(1, int(round(1.0 / cam_hz / engine.DT)))
@@ -140,8 +142,8 @@ class RosBridge:
         self.publish_static()
 
     def publish_static_tf(self):
-        """base_link(또는 mast_link) → 센서 프레임 (robot.yaml), camera_link → camera_optical_link, gnss_link.
-        base_link → mast_link 는 움직이므로 매 스텝 /tf 로 (on_step)."""
+        """base_link(또는 sensor_tower_link) → 센서 프레임 (robot.yaml), camera_link → camera_optical_link, gnss_link.
+        base_link → sensor_tower_link 는 움직이므로 매 스텝 /tf 로 (on_step)."""
         if self.stfb is None:
             return
         stamp = t_to_msg(self.e.t)
@@ -153,6 +155,10 @@ class RosBridge:
             tfs.append(pose_to_tf(T, parent, frame, stamp))
             if name == 'camera':
                 tfs.append(pose_to_tf(T_CAMLINK_OPTICAL, frame, self.cfg['camera']['optical_frame'], stamp))
+        im = self.cfg.get('imu', {})
+        if im.get('enabled', True):
+            tfs.append(pose_to_tf(make_T(im.get('xyz', [0.0, 0.0, 0.25])), self.base_frame, im.get('frame_id', 'imu_link'),
+                                  stamp))
         if 'gnss' not in kin.sensors:
             g = self.cfg.get('gnss', {})
             tfs.append(pose_to_tf(make_T(g.get('antenna_xyz', [0.0, 0.0, 0.0])), self.base_frame,
@@ -185,12 +191,17 @@ class RosBridge:
         if kin.has_mast and self.stfb is not None:     # 런치(robot_state_publisher)에서는 joint_states 로 계산
             tfs.append(pose_to_tf(kin.T_base_mast(e.mast_q), self.base_frame, kin.mast_frame, stamp))
         self.tfb.sendTransform(tfs)
-        if kin.has_mast and e.tick % self.joint_every == 0:
+        if e.tick % self.joint_every == 0:               # 관절: 센서타워 + 좌우 바퀴
             js = JointState()
             js.header.stamp = stamp
-            js.name = [kin.joint]
-            js.position = [float(e.mast_q)]
-            js.velocity = [float(np.sign(e.mast_target - e.mast_q) * kin.rate) if e.mast_q != e.mast_target else 0.0]
+            d = e.drive
+            js.name = ['wheel_left_joint', 'wheel_right_joint']
+            js.position = [float(x) for x in d.wheel_pos]
+            js.velocity = [float(x) for x in d.wheel_v / d.r]
+            if kin.has_mast:
+                js.name.append(kin.joint)
+                js.position.append(float(e.mast_q))
+                js.velocity.append(float(np.sign(e.mast_target - e.mast_q) * kin.rate) if e.mast_q != e.mast_target else 0.0)
             self.pub['joint_states'].publish(js)
         od = Odometry()
         od.header.frame_id, od.header.stamp, od.child_frame_id = self.map_frame, stamp, self.base_frame
@@ -218,6 +229,32 @@ class RosBridge:
                 self._publish_radar(out, st)
             elif name == 'gnss':
                 self._publish_gnss(out, st)
+            elif name == 'imu':
+                self._publish_imu(out, st)
+            elif name == 'wheel':
+                self._publish_wheel_odom(out, st)
+
+    def _publish_imu(self, out, st):
+        m = Imu()
+        m.header.stamp, m.header.frame_id = st, out['frame']
+        m.orientation_covariance[0] = -1.0                       # 자세 없음 (6축)
+        g, a = out['gyro'], out['acc']
+        m.angular_velocity.x, m.angular_velocity.y, m.angular_velocity.z = float(g[0]), float(g[1]), float(g[2])
+        m.linear_acceleration.x, m.linear_acceleration.y, m.linear_acceleration.z = float(a[0]), float(a[1]), float(a[2])
+        ip = self.e.imu.p
+        for i in (0, 4, 8):
+            m.angular_velocity_covariance[i] = ip.gyro_noise ** 2
+            m.linear_acceleration_covariance[i] = ip.accel_noise ** 2
+        self.pub['imu'].publish(m)
+
+    def _publish_wheel_odom(self, out, st):
+        """엔코더 적분 오도메트리 (odom 프레임 = 시작 자세). TF 는 내지 않음 (map → base_link 정답 TF 와 겹치지 않게)."""
+        od = Odometry()
+        od.header.frame_id, od.header.stamp, od.child_frame_id = 'odom', st, self.base_frame
+        od.pose.pose.position.x, od.pose.pose.position.y = float(out['x']), float(out['y'])
+        od.pose.pose.orientation.z, od.pose.pose.orientation.w = float(np.sin(out['yaw'] / 2)), float(np.cos(out['yaw'] / 2))
+        od.twist.twist.linear.x, od.twist.twist.angular.z = float(out['v']), float(out['w'])
+        self.pub['wheel_odom'].publish(od)
 
     def _publish_traffic(self, e, stamp):
         with e.lock:

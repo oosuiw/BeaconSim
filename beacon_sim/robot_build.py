@@ -159,7 +159,7 @@ def build(stl_path, out_root=None, force=False, log=print):
     with open(cfg, 'w') as f:
         f.write('# tools/build_robot.py가 CAD(STL)에서 측정해 생성. 수동 수정 가능.\n')
         f.write('# 좌표: base_link (바퀴 4개 중심의 지면 투영점, x 전방, y 좌, z 위), 단위 m / rad\n')
-        f.write('# 회전: rpy = 고정축 roll, pitch, yaw (URDF와 동일). 마스트 전체가 CAD상 약 0.70도 앞으로 숙여져 있음.\n')
+        f.write('# 회전: rpy = 고정축 roll, pitch, yaw (URDF와 동일). 센서타워 전체가 CAD상 약 0.70도 앞으로 숙여져 있음.\n')
         f.write(f'wheel_radius: {wheel_radius:.4f}\nwheelbase: {wheelbase:.4f}\ntrack: {track:.4f}\n')
         f.write('sensors:\n')
         notes = {
@@ -177,7 +177,7 @@ def build(stl_path, out_root=None, force=False, log=print):
     return cfg
 
 
-# ================================================================== STEP (접이식 마스트, BeaconV6~)
+# ================================================================== STEP (접이식 센서타워, BeaconV6~)
 # 차체 안에 가려 보이지 않는 부품 (메시 크기만 키움)
 STEP_HIDDEN = ('모터(MD)', 'Bearing', '벨트', '풀리', '컨트롤러', 'mcu 컨트롤러', '파워 분대보드', 'XT60', 'PCB ASSY',
                'HEAT SINK', '모터 플레이트')
@@ -232,7 +232,7 @@ def _cylinder(c, r, half_w, n=48):
 
 
 def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy_time=4.0):
-    """접이식 비콘 STEP 두 개(펴짐·접힘) → 링크별 메시 + 마스트 관절 + 센서 포즈 (robot.yaml).
+    """접이식 비콘 STEP 두 개(펴짐·접힘) → 링크별 메시 + 센서타워 관절 + 센서 포즈 (robot.yaml).
     두 파일에서 같은 부품의 위치를 비교해 움직이는 부품(센서함)과 관절 축·각도를 찾는다."""
     from .step_import import read_step
     out_root = out_root or writable_root()
@@ -295,7 +295,7 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
 
     Rm, tm = to_base_T(mast_g['R'], mast_g['t'])
     axis, A, pivot = _axis_angle(Rm, tm)
-    print(f'마스트 관절: 축 {axis.round(4)}, 각도 {np.degrees(A):.2f}°, 피벗(base) {pivot.round(4)} m, 부품 {len(mast_g["idx"])}개')
+    print(f'센서타워 관절: 축 {axis.round(4)}, 각도 {np.degrees(A):.2f}°, 피벗(base) {pivot.round(4)} m, 부품 {len(mast_g["idx"])}개')
     links = {}
     for g in groups:
         if g is mast_g:
@@ -338,7 +338,7 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
         t = np.concatenate(ts).astype(np.float64)
         link = part_link[name]
         if link == 'mast':
-            t = t - pivot                         # mast_link 좌표 (펴짐 상태에서 축 방향은 base 와 같음)
+            t = t - pivot                         # sensor_tower_link 좌표 (펴짐 상태에서 축 방향은 base 와 같음)
         v, f = dedup(t)
         npz[f'{name}_v'], npz[f'{name}_f'] = v, f
         meta_parts[name] = {'link': link, 'color': PART_COLORS_V6.get(name, PART_COLORS_V6['body'])}
@@ -360,7 +360,7 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
     np.savez_compressed(os.path.join(mesh_dir, 'robot_parts.npz'), **npz)
     print('메시: ' + ', '.join(f'{k}({len(npz[k + "_f"])})' for k in meta_parts))
 
-    # --- 센서 포즈 (펴짐 상태, STEP mm → base m → mast_link)
+    # --- 센서 포즈 (펴짐 상태, STEP mm → base m → sensor_tower_link)
     def bb(keys):
         P = np.concatenate([p['tris'].reshape(-1, 3) for p in up if any(x in key(p) for x in keys)])
         return P.min(0), P.max(0)
@@ -392,7 +392,7 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
     lo, hi = bb(('GNSS 안테나',))
     c = (lo + hi) / 2
     gnss = [c[0], c[1], lo[2]]                   # 안테나 윗면 중심
-    # 마스트 기울기 (펴짐): Pandar 윗면 법선
+    # 센서타워 기울기 (펴짐): Pandar 윗면 법선
     P = np.concatenate([p['tris'] for p in up if 'Pandar40P' in key(p)])
     n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
     a_ = np.linalg.norm(n, axis=1)
@@ -404,9 +404,9 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
     poses = {k: stl_to_base(p_, origin) - pivot for k, p_ in
              [('pandar40p', pandar), ('tele15', tele), ('ars408', radar), ('camera', cam), ('gnss', gnss)]}
     print(f'base_link 원점(STEP mm) {origin.round(2)}  바퀴 반지름 {wheel_radius:.4f} m, 휠베이스 {wheelbase:.3f} m, '
-          f'윤거 {track:.3f} m, 마스트 기울기 {np.degrees(pitch):.3f}°')
+          f'윤거 {track:.3f} m, 센서타워 기울기 {np.degrees(pitch):.3f}°')
     for k, p_ in poses.items():
-        print(f'  {k:10s} mast_link 기준 xyz={np.round(p_, 4)}  (펴짐 base {np.round(p_ + pivot, 4)})')
+        print(f'  {k:10s} sensor_tower_link 기준 xyz={np.round(p_, 4)}  (펴짐 base {np.round(p_ + pivot, 4)})')
 
     cfg = os.path.join(out_root, 'config', 'robot.yaml')
     if os.path.exists(cfg) and not force:
@@ -425,16 +425,16 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
     with open(cfg, 'w') as f:
         f.write('# tools/build_robot.py 가 CAD(STEP 펴짐·접힘)에서 측정해 생성. 수동 수정 가능.\n')
         f.write('# 좌표: base_link (바퀴 4개 중심의 지면 투영점, x 전방, y 좌, z 위), 단위 m / rad\n')
-        f.write('# 센서는 mast_link 기준 (펴짐 상태에서 mast_link 축 = base_link 축, 원점 = 접이 피벗)\n')
+        f.write('# 센서는 sensor_tower_link 기준 (펴짐 상태에서 sensor_tower_link 축 = base_link 축, 원점 = 접이 피벗)\n')
         f.write(f'wheel_radius: {wheel_radius:.4f}\nwheelbase: {wheelbase:.4f}\ntrack: {track:.4f}\n')
-        f.write('mast:\n  joint: mast_joint\n  frame_id: mast_link\n')
+        f.write('sensor_tower:\n  joint: sensor_tower_joint\n  frame_id: sensor_tower_link\n')
         f.write(f'  pivot: [{pivot[0]:.4f}, {pivot[1]:.4f}, {pivot[2]:.4f}]   # base_link 기준 접이 축 위치\n')
         f.write(f'  axis: [{axis[0]:.4f}, {axis[1]:.4f}, {axis[2]:.4f}]\n')
         f.write(f'  deployed: {A:.5f}        # 펴짐 각도 [rad] ({np.degrees(A):.2f}°). 0 = 접힘\n')
         f.write(f'  deploy_time: {deploy_time:.1f}      # 접힘 → 펴짐 시간 [s] (AK45-36 구동, 실측으로 고칠 것)\n')
         f.write('sensors:\n')
         for k, p_ in poses.items():
-            f.write(f'  {k}:\n    frame_id: {frames[k]}\n    parent: mast_link\n')
+            f.write(f'  {k}:\n    frame_id: {frames[k]}\n    parent: sensor_tower_link\n')
             f.write(f'    xyz: [{p_[0]:.4f}, {p_[1]:.4f}, {p_[2]:.4f}]\n')
             f.write(f'    rpy: [0.0, {pitch:.5f}, 0.0]\n')
             f.write(f'    note: "{notes[k]}"\n')

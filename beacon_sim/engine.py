@@ -12,6 +12,7 @@ import numpy as np
 
 from . import rgl, scene
 from .common import load_robot_parts
+from .drive import DriveModel, ImuModel, WheelOdom
 from .robot_model import RobotKin, load_robot_links
 from .environment import EnvParams, notice_scale, resolve as resolve_env
 from .gnss import GnssF9P, GnssParams
@@ -37,11 +38,11 @@ class SimEngine:
         self.gnss = GnssF9P(self.model, GnssParams(**cfg.get('gnss', {})), cfg['scenario']['seed'])
         self.robot_links, links_meta, _ = load_robot_links()
         self.kin = RobotKin(robot_cfg, links_meta)
-        # 접이식 마스트: 접힌 채로 시작해서 펴면서 작업 시작 (마스트 없는 예전 모델은 항상 펴짐)
+        # 접이식 센서타워: 접힌 채로 시작해서 펴면서 작업 시작 (센서타워 없는 예전 모델은 항상 펴짐)
         self.mast_q = 0.0 if self.kin.has_mast else self.kin.q_dep
         self.mast_target = self.mast_q
         self.mast_cmd_src = '-'
-        self.mast_auto_done = not self.kin.has_mast
+        self.tower_auto_done = not self.kin.has_mast
         sc = cfg['sim']
         self.max_v, self.max_w, self.cmd_timeout = sc['max_linear'], sc['max_angular'], sc['cmd_vel_timeout']
 
@@ -51,6 +52,15 @@ class SimEngine:
         self.v = self.w = 0.0
         self.t = 0.0
         self.tick = 0
+        # 주행 하드웨어: 좌우 모터·엔코더 → 휠 오도메트리, IMU
+        seed = int(cfg['scenario']['seed'])
+        self.drive = DriveModel(cfg.get('drive', {}), robot_cfg.get('wheel_radius', 0.0975),
+                                robot_cfg.get('track', 0.44), seed)
+        self.odom = WheelOdom(self.drive)                    # odom 프레임 = 시작 자세 (원점)
+        self.imu = ImuModel(cfg.get('imu', {}), seed)
+        self.imu_every = max(1, int(round(1.0 / self.imu.p.rate_hz / self.DT)))
+        self.odom_every = max(1, int(round(1.0 / self.drive.p.odom_rate_hz / self.DT)))
+        self.x0, self.y0, self.yaw0 = None, None, None
         self.cmd = {'ros': (0.0, 0.0, -1e9), 'key': (0.0, 0.0, -1e9)}
         self.cmd_src = '-'
         self.lock = threading.Lock()
@@ -141,29 +151,39 @@ class SimEngine:
         """source: 'ros' | 'key'. ROS 명령이 최근에 있으면 우선."""
         self.cmd[source] = (float(v), float(w), self.t)
 
-    # ------------------------------------------------------------ 접이식 마스트
+    # ------------------------------------------------------------ 접이식 센서타워
     @property
     def mounts(self):
-        """센서 → (frame_id, T_base_sensor) — 지금 마스트 각도 기준"""
+        """센서 → (frame_id, T_base_sensor) — 지금 센서타워 각도 기준"""
         return self.kin.mounts(self.mast_q)
 
     def set_mast(self, deploy, source='key'):
-        """마스트 펴기(True)/접기(False). source: 'ros' | 'key' | 'auto'"""
+        """센서타워 펴기(True)/접기(False). source: 'ros' | 'key' | 'auto'"""
         if not self.kin.has_mast or self.damaged:
             return
         target = self.kin.q_dep if deploy else 0.0
-        self.mast_auto_done = True
+        self.tower_auto_done = True
         if abs(target - self.mast_target) > 1e-9:
             self.mast_target = target
             self.mast_cmd_src = source
-            self.events.append((self.t, 'mast', -1, f'마스트 {"펴기" if deploy else "접기"} 시작 ({source})'))
+            self.events.append((self.t, 'mast', -1, f'센서타워 {"펴기" if deploy else "접기"} 시작 ({source})'))
+
+    def odom_error(self):
+        """휠 오도메트리 오차: (위치 [m], 방향 [rad]) — 시작 자세 기준 정답과 비교"""
+        if self.x0 is None:
+            return 0.0, 0.0
+        c, s = np.cos(-self.yaw0), np.sin(-self.yaw0)
+        dx, dy = self.x - self.x0, self.y - self.y0
+        tx, ty = c * dx - s * dy, s * dx + c * dy
+        dyaw = (self.odom.yaw - (self.yaw - self.yaw0) + np.pi) % (2 * np.pi) - np.pi
+        return float(np.hypot(self.odom.x - tx, self.odom.y - ty)), float(dyaw)
 
     @property
     def mast_frac(self):
         return 1.0 if not self.kin.has_mast else self.mast_q / max(self.kin.q_dep, 1e-9)
 
     def _step_mast(self, dt):
-        if not self.mast_auto_done and self.scn.sp.mast_auto and self.t >= self.scn.sp.mast_deploy_at:
+        if not self.tower_auto_done and self.scn.sp.tower_auto and self.t >= self.scn.sp.tower_deploy_at:
             self.set_mast(True, 'auto')
         if self.mast_q == self.mast_target:
             return
@@ -171,7 +191,7 @@ class SimEngine:
         step = self.kin.rate * dt
         self.mast_q = self.mast_target if abs(d) <= step * (1 + 1e-6) else self.mast_q + np.sign(d) * step
         if self.mast_q == self.mast_target:
-            self.events.append((self.t, 'mast', -1, '마스트 ' + ('펴짐 — 작업 자세' if self.mast_q > 0 else '접힘')))
+            self.events.append((self.t, 'mast', -1, '센서타워 ' + ('펴짐 — 작업 자세' if self.mast_q > 0 else '접힘')))
 
     # ------------------------------------------------------------ 충돌 / 파손 / 고장 / 시야
     def _faulted(self, name):
@@ -293,9 +313,13 @@ class SimEngine:
             v, w, self.cmd_src = 0.0, 0.0, '-'
         if self.damaged:
             v, w, self.cmd_src = 0.0, 0.0, '파손'
+        elif (self.cmd_src == '/cmd_vel' and self.drive.p.wait_tower_up and self.kin.has_mast
+              and self.mast_q < self.kin.q_dep - 1e-6):
+            v, w, self.cmd_src = 0.0, 0.0, '/cmd_vel (타워 펴짐 대기)'     # 실기 AUTO: 타워가 다 펴진 뒤 주행
+        v = float(np.clip(v, -self.max_v, self.max_v))
+        w = float(np.clip(w, -self.max_w, self.max_w))
         with self.lock:
-            self.v = float(np.clip(v, -self.max_v, self.max_v))
-            self.w = float(np.clip(w, -self.max_w, self.max_w))
+            self.v, self.w = self.drive.step(dt, v, w)          # 모터 응답·스키드 스티어·미끄럼
             ny = self.yaw + self.w * dt
             nx = self.x + self.v * np.cos(ny) * dt
             ny_ = self.y + self.v * np.sin(ny) * dt
@@ -346,12 +370,25 @@ class SimEngine:
         if self.gnss.gp.enabled and self.t >= self.gnss_next - 1e-9:
             self.gnss_next += 1.0 / self.gnss.gp.rate_hz
             if not self._faulted('gnss'):
-                T_ant = self.T_wb.copy()                    # 안테나 위치: 마스트 위 GNSS (robot.yaml) 또는 base_link + antenna_xyz
+                T_ant = self.T_wb.copy()                    # 안테나 위치: 센서타워 위 GNSS (robot.yaml) 또는 base_link + antenna_xyz
                 if 'gnss' in self.kin.sensors:
                     T_ant[:3, 3] = (self.T_wb @ self.kin.mount('gnss', self.mast_q)[1])[:3, 3]
                 else:
                     T_ant[:3, 3] = self.T_wb[:3, :3] @ np.asarray(self.gnss.gp.antenna_xyz, float) + self.T_wb[:3, 3]
                 fired['gnss'] = self.gnss.step(self.t, T_ant, self.s_b)
+        # IMU (100 Hz), 휠 오도메트리 (엔코더 50 Hz)
+        if self.imu.p.enabled and self.tick % self.imu_every == 0:
+            r = self.imu.step(self.imu_every * dt, self.T_wb)
+            if r is not None:
+                fired['imu'] = {'t': self.t, 'gyro': r[0], 'acc': r[1], 'frame': self.imu.p.frame_id}
+        if self.tick % self.odom_every == 0:
+            if self.x0 is None:
+                self.x0, self.y0, self.yaw0 = self.x, self.y, self.yaw
+            o = self.odom.update(self.odom_every * dt)
+            d = self.drive
+            fired['wheel'] = {'t': self.t, 'x': o.x, 'y': o.y, 'yaw': o.yaw, 'v': o.v, 'w': o.w,
+                              'wheel_pos': d.wheel_pos.copy(), 'wheel_vel': d.wheel_v / d.r,
+                              'counts': d.encoder_int32(), 'rpm': d.motor_rpm(), 'odom_err': self.odom_error()}
         ev = self.traffic.events[self.n_events:] + self.events
         self.n_events = len(self.traffic.events)
         self.events = []
