@@ -8,7 +8,7 @@ set -euo pipefail
 export PYTHONNOUSERSITE=1          # 빌드 PC의 ~/.local 패키지를 보지 않게
 unset PYTHONPATH PYTHONHOME        # ROS 등 외부 경로 차단
 cd "$(dirname "$(readlink -f "$0")")/.."
-VER="${1:-$(python3 -c 'import sys; sys.path.insert(0,"."); from beacon_sim.roadgen import GENERATOR_VERSION as v; print(v)')}"
+VER="${1:-$(python3 -c 'import sys; sys.path.insert(0,"."); from beacon_sim import __version__ as v; print(v)')}"
 PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.10.22%2B20261009-x86_64-unknown-linux-gnu-install_only.tar.gz"
 RGL_URL="https://github.com/RobotecAI/RobotecGPULidar/releases/download/v0.21.0/RGL-core-linux-x64.zip"
 TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
@@ -54,6 +54,7 @@ fetch https://raw.githubusercontent.com/RobotecAI/RobotecGPULidar/v0.21.0/LICENS
 cp "$DL/RGL-LICENSE" "$R/LICENSES/RobotecGPULidar-Apache-2.0.txt"
 cp assets/fonts/OFL-Pretendard.txt "$R/LICENSES/"
 cp packaging/THIRD_PARTY.md "$R/LICENSES/"
+cp LICENSE "$R/LICENSE"
 
 echo "== AppRun / desktop / 아이콘"
 cp packaging/AppRun "$APPDIR/AppRun"; chmod +x "$APPDIR/AppRun"

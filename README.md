@@ -175,3 +175,8 @@ source /opt/ros/humble/setup.bash && .venv/bin/python tools/run_scenarios.py sce
 - `.venv` (system-site-packages + moderngl, imgui-bundle, glfw). Open3D 오프스크린 렌더러가 이 환경에서 크래시해서 moderngl 사용
 - UI 폰트: `assets/fonts/` (Pretendard PUA 제거본 + Font Awesome 6, 둘 다 OFL). 없으면 나눔고딕·은돋움으로 대체
 - 스캔 패턴/채널 표: `third_party/ref/` (livox_laser_simulation tele.csv, AWSIM LaserArrayLibrary)
+
+## 라이선스
+Copyright (c) 2026 BeaconSim authors. All rights reserved. (LICENSE 참고)
+코드는 참고용으로 공개되며, 사용·수정·배포에는 저작권자의 서면 허락이 필요합니다.
+함께 쓰는 제3자 구성요소(RGL, Pretendard, Font Awesome, Python 패키지)는 각자의 라이선스를 따릅니다 (packaging/THIRD_PARTY.md).

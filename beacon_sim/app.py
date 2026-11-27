@@ -40,6 +40,7 @@ from . import ui_style as S
 from .imgui_mgl import GlfwInput, ImguiRenderer
 from .ui_style import FA
 from .render import CameraRenderer, OverlayRenderer, SceneRenderer
+from . import __version__
 from .roadgen import GENERATOR_VERSION, RoadParams, generate
 from .traffic import B_CRASH, ScenarioParams, TrafficParams
 from .app_start import MODE_KO, StartMixin, default_test
@@ -214,7 +215,7 @@ class App(StartMixin):
         glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, True)
         glfw.window_hint(glfw.SAMPLES, 4)
         glfw.window_hint(glfw.VISIBLE, not hidden)
-        self.win = glfw.create_window(width, height, f'BeaconSim 세이프티 비콘 시뮬레이터 v{GENERATOR_VERSION}', None, None)
+        self.win = glfw.create_window(width, height, f'BeaconSim 세이프티 비콘 시뮬레이터 v{__version__}', None, None)
         glfw.make_context_current(self.win)
         glfw.swap_interval(1)
         self.ctx = moderngl.create_context()
@@ -612,7 +613,7 @@ class App(StartMixin):
         imgui.pop_font()
         imgui.same_line()
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 6 * self.scale)
-        S.muted(f'v{GENERATOR_VERSION}')
+        S.muted(f'v{__version__}')
         imgui.same_line()
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - 3 * self.scale)
         S.chip(MODE_KO.get(self.mode, ''), S.WARN if self.mode == 'test' else S.ACCENT,

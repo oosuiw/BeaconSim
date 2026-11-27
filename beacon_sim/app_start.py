@@ -11,7 +11,8 @@ from imgui_bundle import imgui
 from . import ui_style as S
 from .environment import EnvParams
 from .evaluate import CRITERIA_DEFAULT_VALUE, CRITERIA_KO, DEFAULT_CRITERIA
-from .roadgen import GENERATOR_VERSION, RoadParams
+from . import __version__
+from .roadgen import RoadParams
 from .session import PRESETS, SENSORS_KO, RegressRun, list_scenarios, save_regression, scenario_dirs
 from .traffic import ScenarioParams, TrafficParams
 from .ui_style import FA
@@ -199,7 +200,7 @@ class StartMixin:
         imgui.pop_font()
         imgui.same_line()
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 12 * sc)
-        S.muted(f'v{GENERATOR_VERSION}  ·  세이프티 비콘 시뮬레이터  ·  모드를 고르고 조건을 정한 뒤 시작하세요')
+        S.muted(f'v{__version__}  ·  세이프티 비콘 시뮬레이터  ·  모드를 고르고 조건을 정한 뒤 시작하세요')
         if self.prev_mode is not None:
             imgui.same_line(cw - 190 * sc)
             if imgui.button(f'{FA.ICON_FA_ARROW_LEFT}  {MODE_KO[self.prev_mode]} 화면으로 돌아가기'):
