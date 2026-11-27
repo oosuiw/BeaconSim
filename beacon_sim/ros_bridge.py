@@ -24,12 +24,20 @@ import numpy as _np
 
 from .common import T_CAMLINK_OPTICAL, R_to_quat, make_T, quats_from_R
 from .gnss import FIX, FLOAT, NONE, SINGLE
+from .gt import LaneGT, vehicle_objects
+
+try:                                  # 정답 객체: Autoware 표준 메시지 (없으면 마커만). PredictedObjects 는 예전 1.0 판에도 있다
+    from autoware_perception_msgs.msg import ObjectClassification, PredictedObject, PredictedObjects, Shape
+except ImportError:                   # pragma: no cover
+    PredictedObjects = None
+LANE_RGBA = {1: (1.0, 0.8, 0.1, 1.0), 2: (1.0, 1.0, 1.0, 1.0), 3: (0.6, 0.9, 1.0, 1.0)}
 
 T0_NS = 1_000_000_000          # /clock 시작 오프셋 (0은 '미설정'으로 취급되는 노드가 있어 피함)
 
 _NP2PF = {np.dtype('float32'): PointField.FLOAT32, np.dtype('float64'): PointField.FLOAT64,
           np.dtype('uint8'): PointField.UINT8, np.dtype('uint16'): PointField.UINT16,
-          np.dtype('uint32'): PointField.UINT32, np.dtype('int32'): PointField.INT32}
+          np.dtype('uint32'): PointField.UINT32, np.dtype('int32'): PointField.INT32,
+          np.dtype('int8'): PointField.INT8}
 
 
 def to_pc2(arr, frame_id, stamp):
@@ -135,6 +143,20 @@ class RosBridge:
         self.pub['joint_states'] = cp(JointState, sc.get('joint_states_topic', '/joint_states'), 10)
         self.pub['wheel_odom'] = cp(Odometry, sc.get('wheel_odom_topic', '/beacon/wheel_odom'), 10)
         self.pub['imu'] = cp(Imu, cfg.get('imu', {}).get('topic', '/sensing/imu/imu_raw'), 50)
+        g = cfg.get('ground_truth', {})
+        self.gt = g
+        if PredictedObjects is not None:
+            self.pub['gt_objects'] = cp(PredictedObjects, g.get('objects_topic', '/ground_truth/objects'), 10)
+        else:
+            node.get_logger().warn('autoware_perception_msgs 없음 → /ground_truth/objects 는 마커만 '
+                                   '(sudo apt install ros-humble-autoware-perception-msgs)')
+        self.pub['gt_lanes'] = cp(PointCloud2, g.get('lanes_topic', '/ground_truth/lanes'), 10)
+        if g.get('markers', True):
+            self.pub['gt_objects_mk'] = cp(MarkerArray, g.get('objects_topic', '/ground_truth/objects') + '/markers', 10)
+            self.pub['gt_lanes_mk'] = cp(MarkerArray, g.get('lanes_topic', '/ground_truth/lanes') + '/markers', 10)
+        self.obj_every = max(1, int(round(1.0 / g.get('objects_rate_hz', 10.0) / engine.DT)))
+        self.lane_every = max(1, int(round(1.0 / g.get('lanes_rate_hz', 10.0) / engine.DT)))
+        self._lane_gt = (None, None)                   # (도로 모델, LaneGT): 재시작으로 맵이 바뀌면 다시 만듦
         self.joint_every = max(1, int(round(0.02 / engine.DT)))          # 50 Hz
         cam_hz = cfg['camera']['rate_hz']
         self.traffic_every = max(1, int(round(1.0 / cam_hz / engine.DT)))
@@ -215,6 +237,10 @@ class RosBridge:
             self._publish_traffic(e, stamp)
         if self.markers and e.tick % self.marker_every == 0:
             self._publish_npc_markers(e, stamp)
+        if e.tick % self.obj_every == 0:
+            self._publish_gt_objects(e, stamp, T_wb)
+        if e.tick % self.lane_every == 0:
+            self._publish_gt_lanes(e, stamp, T_wb)
         for ev in events:
             self.pub['events'].publish(String(data=json.dumps(
                 {'t': round(ev[0], 2), 'type': ev[1], 'vehicle': ev[2], 'info': ev[3]}, ensure_ascii=False)))
@@ -268,6 +294,69 @@ class RosBridge:
             p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = qx, qy, qz, qw
             pa.poses.append(p)
         self.pub['traffic'].publish(pa)
+
+    def _publish_gt_objects(self, e, stamp, T_wb):
+        in_map = self.gt.get('objects_frame', 'base_link') == 'map'
+        frame = self.map_frame if in_map else self.base_frame
+        with e.lock:
+            objs = vehicle_objects(e.traffic, e.t, T_wb, float(self.gt.get('objects_range', 200.0)), in_map)
+        if 'gt_objects' in self.pub:
+            msg = PredictedObjects()
+            msg.header.frame_id, msg.header.stamp = frame, stamp
+            for o in objs:
+                d = PredictedObject()
+                d.object_id = UUID(uuid=list(int(o['id'] + 1).to_bytes(16, 'little')))     # 차량 번호 (재시작 전까지 고정)
+                d.existence_probability = 1.0
+                c = ObjectClassification()
+                c.label = ObjectClassification.TRUCK if o['kind'] == 'truck' else ObjectClassification.CAR
+                c.probability = 1.0
+                d.classification.append(c)
+                k = d.kinematics
+                p = k.initial_pose_with_covariance.pose
+                p.position.x, p.position.y, p.position.z = map(float, o['T'][:3, 3])
+                p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = map(float, R_to_quat(o['T'][:3, :3]))
+                k.initial_twist_with_covariance.twist.linear.x = float(o['vel'][0])      # 차량 좌표계 (앞 +x)
+                k.initial_twist_with_covariance.twist.linear.y = float(o['vel'][1])
+                d.shape.type = Shape.BOUNDING_BOX
+                d.shape.dimensions = Vector3(x=float(o['size'][0]), y=float(o['size'][1]), z=float(o['size'][2]))
+                msg.objects.append(d)
+            self.pub['gt_objects'].publish(msg)
+        if 'gt_objects_mk' in self.pub:
+            ma = MarkerArray()
+            ma.markers.append(Marker(header=Header(frame_id=frame, stamp=stamp), ns='gt_obj', action=Marker.DELETEALL))
+            for o in objs:
+                mk = Marker(header=Header(frame_id=frame, stamp=stamp), ns='gt_obj', id=o['id'], type=Marker.CUBE)
+                mk.pose.position.x, mk.pose.position.y, mk.pose.position.z = map(float, o['T'][:3, 3])
+                q = R_to_quat(o['T'][:3, :3])
+                mk.pose.orientation.x, mk.pose.orientation.y, mk.pose.orientation.z, mk.pose.orientation.w = map(float, q)
+                mk.scale = Vector3(x=float(o['size'][0]), y=float(o['size'][1]), z=float(o['size'][2]))
+                mk.color = ColorRGBA(r=0.2, g=1.0, b=0.4, a=0.35)
+                ma.markers.append(mk)
+            self.pub['gt_objects_mk'].publish(ma)
+
+    def _publish_gt_lanes(self, e, stamp, T_wb):
+        g = self.gt
+        if self._lane_gt[0] is not e.model:
+            self._lane_gt = (e.model, LaneGT(e.model, float(g.get('lanes_step', 1.0))))
+        a = self._lane_gt[1].window(e.s_b, float(g.get('lanes_behind', 30.0)), float(g.get('lanes_ahead', 100.0)), T_wb)
+        self.pub['gt_lanes'].publish(to_pc2(a, self.base_frame, stamp))
+        if 'gt_lanes_mk' in self.pub:
+            hdr = Header(frame_id=self.base_frame, stamp=stamp)
+            ma = MarkerArray()
+            ma.markers.append(Marker(header=hdr, ns='gt_lane', action=Marker.DELETEALL))
+            for lid in np.unique(a['line_id']):
+                b = a[a['line_id'] == lid]
+                mk = Marker(header=hdr, ns='gt_lane', id=int(lid), type=Marker.LINE_LIST)
+                mk.scale.x = 0.15
+                mk.pose.orientation.w = 1.0
+                r, gg, bb, al = LANE_RGBA.get(int(b['kind'][0]), (1, 1, 1, 1))
+                mk.color = ColorRGBA(r=r, g=gg, b=bb, a=al)
+                for p0, p1 in zip(b[:-1], b[1:]):            # 도색된 구간만 선으로 (점선 빈칸은 비움)
+                    if p0['painted'] and p1['painted']:
+                        mk.points.append(Point(x=float(p0['x']), y=float(p0['y']), z=float(p0['z'])))
+                        mk.points.append(Point(x=float(p1['x']), y=float(p1['y']), z=float(p1['z'])))
+                ma.markers.append(mk)
+            self.pub['gt_lanes_mk'].publish(ma)
 
     def _publish_npc_markers(self, e, stamp):
         tr = e.traffic

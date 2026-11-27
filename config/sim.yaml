@@ -61,6 +61,17 @@ environment:
   p_snow: 0.1
 
 # u-blox ZED-F9P 모델 (gnss.GnssParams)
+ground_truth:             # 정답 (base_link 기준, 비콘 주변만)
+  objects_topic: /ground_truth/objects        # autoware_perception_msgs/PredictedObjects — 주행 차량 3D 박스, object_id = 차량 번호, 속도
+  objects_frame: base_link  # base_link | map
+  objects_rate_hz: 10.0
+  objects_range: 200.0      # 비콘에서 이 거리 안의 차량만 [m]
+  lanes_topic: /ground_truth/lanes            # PointCloud2 — 차선 3D 중심선 점 (x,y,z,line_id,kind,side,painted,wear)
+  lanes_rate_hz: 10.0
+  lanes_behind: 30.0        # 비콘 뒤(-s) 범위 [m]
+  lanes_ahead: 100.0        # 비콘 앞(+s) 범위 [m]
+  lanes_step: 1.0           # 점 간격 [m]
+  markers: true             # RViz 용 MarkerArray (<토픽>/markers)
 drive:                    # 좌우 모터 차동(스키드 스티어) 모델 — (임시) 값은 실기 사양으로 고칠 것
   gear_ratio: 10.0          # (임시) 모터 → 바퀴 감속비
   counts_per_motor_rev: 4096.0   # (임시) 엔코더 카운트 / 모터 1회전
@@ -162,6 +173,7 @@ camera:
   info_topic: /sensing/camera/arducam/camera_info
   optical_frame: camera_optical_link
   gt_topic: /ground_truth/camera/arducam/labels   # 정답 라벨 영상 mono8 (픽셀 = 라벨 번호, 라이다 정답과 같은 번호). Godot 화면에서만
+  gt_classes: [lane_white, lane_yellow]           # 라벨 영상에 남길 종류 (나머지는 0). 가려진 차선은 0. 비우면 전부
   gt_enabled: true
   width: 1920
   height: 1200

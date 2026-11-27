@@ -532,6 +532,9 @@ class Server:
         shm = '/dev/shm' if os.path.isdir('/dev/shm') else CACHE_DIR
         self.cam_path = os.path.join(shm, f'beaconsim_view_{os.getpid()}.rgb')
         self.label_path = os.path.join(shm, f'beaconsim_label_{os.getpid()}.r8')
+        from .scene import CLASS
+        keep = self.be.base_cfg['camera'].get('gt_classes') or []
+        self.label_keep = np.array([CLASS[c] for c in keep], np.uint8) if keep else None
         # 폰트는 실행 인자로 넘겨 창이 처음 그려질 때부터 쓰게 한다 (Godot 은 시스템 폰트를 쓰지 않으므로 없으면 한글이 □)
         self.fonts = ui_fonts()
         self.icons = os.path.join(ROOT, 'assets', 'fonts', 'Font_Awesome_6_Free-Solid-900.otf')
@@ -885,6 +888,8 @@ class Server:
             lr = np.fromfile(self.label_path, np.uint8)
             if lr.size == w * h:
                 lab = np.rint(lr.reshape(h, w) / 20.0).astype(np.uint8)
+                if self.label_keep is not None:            # 차선만 남김 (나머지·가려진 곳은 0)
+                    lab[~np.isin(lab, self.label_keep)] = 0
                 self.be.ros.publish_label(self.be.cam.distort_nearest(lab), t, frame)
         self.cam_stats['pub'].append(time.time() - t_pub)
 
