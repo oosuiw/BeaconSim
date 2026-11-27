@@ -180,3 +180,12 @@ source /opt/ros/humble/setup.bash && .venv/bin/python tools/run_scenarios.py sce
 Copyright (c) 2026 BeaconSim authors. All rights reserved. (LICENSE 참고)
 코드는 참고용으로 공개되며, 사용·수정·배포에는 저작권자의 서면 허락이 필요합니다.
 함께 쓰는 제3자 구성요소(RGL, Pretendard, Font Awesome, Python 패키지)는 각자의 라이선스를 따릅니다 (packaging/THIRD_PARTY.md).
+
+## Godot 카메라 렌더러 (시제품)
+기존 카메라(moderngl)보다 고품질인 카메라 영상을 Godot 4 (Forward+)로 그린다. 엔진·교통·LiDAR/레이더는 그대로 쓴다.
+- 준비: [Godot 4.x Linux](https://godotengine.org/download/linux/)를 받아 `third_party/godot/` 에 압축 해제 (또는 `BEACONSIM_GODOT=<실행 파일>`)
+- 비교: `.venv/bin/python tools/godot_camera.py --times 8 --set environment.time_of_day=night --set environment.weather=rain`
+  → `results/godot/<시각>/compare_<t>.png` (위: 기존, 아래: Godot, 같은 렌즈 왜곡 적용)
+- 실시간: `--live 30` (Godot 창에 카메라 주기로 송출)
+- 구성: `beacon_sim/godot_link.py` (glb·json 내보내기, UDP 상태 송신), `godot/` (Godot 프로젝트)
+- 아직: GUI·ROS 카메라 토픽 연동 전, 차량 창문·번호판 등 세부 모델 없음
