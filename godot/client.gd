@@ -104,6 +104,9 @@ func start(a: Dictionary) -> void:
 	neutral_env = _neutral_env()
 	_build_overlays()
 	_build_ui()
+	if args.has("font-medium"):                  # 창이 처음 그려질 때부터 한글·아이콘 폰트 사용
+		_load_fonts({"Medium": args["font-medium"], "Bold": args.get("font-bold", args["font-medium"])},
+			args.get("font-icons", ""))
 	get_window().size_changed.connect(_on_resize)
 	_on_resize()
 	tcp.connect_to_host("127.0.0.1", int(args.get("port", "0")))
@@ -839,10 +842,13 @@ func _layout() -> void:
 
 # ================================================================== UI
 func _load_fonts(fonts: Dictionary, icons: String) -> void:
+	if font_body != null and font_body.get_meta("src", "") == str(fonts.get("Medium", "")):
+		return                                   # 실행 인자로 이미 읽음
 	var fa := FontFile.new()
 	fa.load_dynamic_font(icons)
 	font_body = FontFile.new()
 	font_body.load_dynamic_font(fonts["Medium"])
+	font_body.set_meta("src", str(fonts["Medium"]))
 	font_body.fallbacks = [fa]
 	font_bold = FontFile.new()
 	font_bold.load_dynamic_font(fonts["Bold"])
@@ -883,6 +889,7 @@ func _build_ui() -> void:
 	ui.add_child(loading)
 	_build_help()
 	start_ui = StartScreen.new()
+	start_ui.visible = false                     # 백엔드가 첫 화면 정보를 보내면 표시
 	start_ui.edited.connect(_on_edit)
 	start_ui.action.connect(_on_action)
 	ui.add_child(start_ui)

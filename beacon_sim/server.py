@@ -492,6 +492,17 @@ class Backend(CondMixin):
         self.pool.shutdown(wait=False)
 
 
+def ui_fonts():
+    """Pretendard (PUA 영역 제거본 — Font Awesome 아이콘과 충돌 방지). 만들 수 없으면 원본."""
+    fonts = {w: os.path.join(ROOT, 'assets', 'fonts', f'Pretendard-{w}.otf') for w in ('Medium', 'SemiBold', 'Bold')}
+    try:
+        from .ui_style import _ui_font
+        fonts = {w: _ui_font(w) or p for w, p in fonts.items()}
+    except Exception:     # noqa: BLE001
+        pass
+    return fonts
+
+
 class Server:
     """Godot 클라이언트와의 연결: 상태·센서 송신, 명령 수신."""
 
@@ -520,8 +531,12 @@ class Server:
         self.export_was_busy = False
         shm = '/dev/shm' if os.path.isdir('/dev/shm') else CACHE_DIR
         self.cam_path = os.path.join(shm, f'beaconsim_view_{os.getpid()}.rgb')
+        # 폰트는 실행 인자로 넘겨 창이 처음 그려질 때부터 쓰게 한다 (Godot 은 시스템 폰트를 쓰지 않으므로 없으면 한글이 □)
+        self.fonts = ui_fonts()
+        self.icons = os.path.join(ROOT, 'assets', 'fonts', 'Font_Awesome_6_Free-Solid-900.otf')
         cmd = [godot_bin(), '--path', project_dir(), '--resolution', f'{window[0]}x{window[1]}', '--',
-               '--client', f'--port={self.port}', *extra]
+               '--client', f'--port={self.port}', f'--font-medium={self.fonts["Medium"]}',
+               f'--font-bold={self.fonts["Bold"]}', f'--font-icons={self.icons}', *extra]
         self.proc = subprocess.Popen(cmd, env=godot_env())
 
     # ---- 송수신
@@ -884,12 +899,7 @@ class Server:
             raise RuntimeError('Godot 클라이언트가 연결하지 않음')
         self.conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.conn.setblocking(False)
-        fonts = {w: os.path.join(ROOT, 'assets', 'fonts', f'Pretendard-{w}.otf') for w in ('Medium', 'SemiBold', 'Bold')}
-        try:
-            from .ui_style import _ui_font
-            fonts = {w: _ui_font(w) for w in fonts}               # Pretendard PUA 영역 제거본 (아이콘 충돌 방지)
-        except Exception:     # noqa: BLE001
-            pass
+        fonts = self.fonts
         # 카메라 패널용 렌즈 왜곡 맵 (출력 화소 → 렌더 영상 UV, float32 RG) — Godot 셰이더가 쓴다
         cam = self.be.cam
         dmap = os.path.join(CACHE_DIR, f'camera_distort_{cam.W}x{cam.H}.f32')
