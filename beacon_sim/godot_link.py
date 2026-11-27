@@ -214,17 +214,25 @@ def available():
         return False
 
 
-def project_dir():
-    """Godot 은 프로젝트 폴더에 .godot/ 캐시를 쓰므로, 읽기 전용(AppImage)이면 캐시 폴더로 복사해서 쓴다."""
-    if os.access(GODOT_DIR, os.W_OK):
+def project_dir(camera=False):
+    """Godot 은 프로젝트 폴더에 .godot/ 캐시를 쓰므로, 읽기 전용(AppImage)이면 캐시 폴더로 복사해서 쓴다.
+    camera=True: 기존 앱용 숨은 카메라 렌더러 → 투명 창 허용(override.cfg)을 넣은 별도 사본.
+    (본 프로젝트에서 투명 창을 허용하면 Godot 앱 창이 최대화할 때 투명해진다)"""
+    if not camera and os.access(GODOT_DIR, os.W_OK):
         return GODOT_DIR
     import shutil
     from .common import CACHE_DIR
-    dst = os.path.join(CACHE_DIR, 'godot_project')
+    dst = os.path.join(CACHE_DIR, 'godot_camera_project' if camera else 'godot_project')
     os.makedirs(dst, exist_ok=True)
     for f in os.listdir(GODOT_DIR):
         if f.endswith(('.godot', '.tscn', '.gd')):
             shutil.copy2(os.path.join(GODOT_DIR, f), os.path.join(dst, f))
+    ov = os.path.join(dst, 'override.cfg')
+    if camera:
+        with open(ov, 'w') as fh:
+            fh.write('[display]\nwindow/per_pixel_transparency/allowed=true\n')
+    elif os.path.exists(ov):
+        os.remove(ov)
     return dst
 
 
@@ -253,7 +261,7 @@ class GodotLink:
         self.pending = None
         shm = '/dev/shm' if os.path.isdir('/dev/shm') else os.path.dirname(scene_json)
         self.raw_path = os.path.join(shm, f'beaconsim_cam_{os.getpid()}_{port}.rgb')
-        cmd = [godot_bin(), '--path', project_dir(), '--resolution', f'{window[0]}x{window[1]}', '--',
+        cmd = [godot_bin(), '--path', project_dir(camera=hidden), '--resolution', f'{window[0]}x{window[1]}', '--',
                f'--scene={scene_json}', f'--port={port}', f'--reply={self.rx.getsockname()[1]}']
         if hidden:
             cmd.append('--hidden')
