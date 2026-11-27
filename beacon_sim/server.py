@@ -937,6 +937,7 @@ class Server:
             w = self.be.poll_build()
             if w is not None:
                 self.last_pc_t = {}
+                self.cam_next_t, self.cam_pending = 0.0, None      # 새 엔진은 t=0 부터: 카메라 요청 시각도 처음부터
                 self.be._perf('생성 끝')
                 self.send_world(*w)
                 self.be._perf(f'world 전송 (대기열 {len(self.txq)}) {time.time():.3f}')

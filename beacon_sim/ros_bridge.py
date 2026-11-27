@@ -46,8 +46,19 @@ def to_pc2(arr, frame_id, stamp):
     return msg
 
 
+class SimClock:
+    """ROS 시각 = 시작값 + offset + 엔진 시각. 재시작(새 엔진, t=0)해도 /clock 이 뒤로 가지 않게 offset 을 올린다
+    (뒤로 가면 RViz2 등이 'jump back in time' 으로 TF 버퍼를 지우고 한동안 메시지를 버린다)."""
+    offset = 0.0
+    last = 0.0          # 지금까지 발행한 가장 늦은 시각 (offset 포함)
+
+    @classmethod
+    def new_run(cls, engine_t=0.0):
+        cls.offset = cls.last + 0.1 - engine_t
+
+
 def t_to_msg(t):
-    ns = int(round(t * 1e9)) + T0_NS
+    ns = int(round((t + SimClock.offset) * 1e9)) + T0_NS
     return TimeMsg(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
 
 
@@ -164,6 +175,7 @@ class RosBridge:
 
     # 엔진 스레드에서 매 스텝 호출
     def on_step(self, e, fired, events):
+        SimClock.last = max(SimClock.last, e.t + SimClock.offset)
         stamp = t_to_msg(e.t)
         if self.clock:
             self.pub['clock'].publish(Clock(clock=stamp))

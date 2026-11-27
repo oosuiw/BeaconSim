@@ -48,6 +48,8 @@ class RosLink:
             threading.Thread(target=self._spin, daemon=True).start()
             self.log('ROS2 연동: 토픽 발행 중, /cmd_vel 수신 대기')
         else:
+            from .ros_bridge import SimClock
+            SimClock.new_run(engine.t)            # 재시작: ROS 시각은 이어서 (뒤로 가지 않게)
             self.bridge.e = engine
             self.bridge.publish_static()
         return self.bridge.on_step
