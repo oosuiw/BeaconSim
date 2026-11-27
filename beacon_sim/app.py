@@ -253,6 +253,8 @@ class App(StartMixin):
         try:
             with open(p) as f:
                 d = json.load(f)
+            from .modes import migrate_settings
+            migrate_settings(d)
             for key, cls in [('params', RoadParams), ('scenario', ScenarioParams), ('traffic', TrafficParams),
                              ('env', EnvParams)]:
                 if key in d:
@@ -270,7 +272,7 @@ class App(StartMixin):
                        'traffic': self.tparams.to_dict(), 'env': self.eparams.to_dict(),
                        'export_dir': self.export_dir, 'rand_map': self.rand_map, 'rand_scn': self.rand_scn,
                        'mode': self.mode_sel, 'test': self.test, 'ui_zoom': self.ui_zoom_user,
-                       'cam_backend': self.cam_backend},
+                       'cam_backend': self.cam_backend, 'settings_ver': 2},
                       f, indent=1)
 
     # ------------------------------------------------------------ 빌드 (맵/시나리오/엔진)

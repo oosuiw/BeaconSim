@@ -134,6 +134,8 @@ class Backend(CondMixin):
                 d = json.load(f)
         except Exception:     # noqa: BLE001
             d = {}
+        from .modes import migrate_settings
+        migrate_settings(d)
         for key, cls, attr in [('params', RoadParams, 'params'), ('scenario', ScenarioParams, 'sparams'),
                                ('traffic', TrafficParams, 'tparams'), ('env', EnvParams, 'eparams')]:
             if key in d:
@@ -164,7 +166,7 @@ class Backend(CondMixin):
             d = {}
         d.update(params=self.params.to_dict(), scenario=self.sparams.to_dict(), traffic=self.tparams.to_dict(),
                  env=self.eparams.to_dict(), rand_map=self.rand_map, rand_scn=self.rand_scn, export_dir=self.export_dir,
-                 mode=self.mode_sel, test=self.test)
+                 mode=self.mode_sel, test=self.test, settings_ver=2)
         os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
         with open(SETTINGS, 'w') as f:
             json.dump(d, f, indent=1)

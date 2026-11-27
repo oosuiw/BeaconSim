@@ -33,6 +33,17 @@ WHERE_KO = {'random': '랜덤', 'open': '개활지', 'tunnel_entry': '터널 입
 SIDE_KO = {'random': '랜덤', 'down': '하행', 'up': '상행'}
 
 
+SETTINGS_VER = 2       # app.json 형식: 2 = 마스트 자동 펴기 기본 켬
+
+
+def migrate_settings(d):
+    """예전 app.json → 지금 기본값 (한 번만). 반환: 같은 dict"""
+    if int(d.get('settings_ver', 0)) < 2 and isinstance(d.get('scenario'), dict):
+        d['scenario']['mast_auto'] = True          # 자동 펴기를 기본으로 바꿈 (v0.3.x)
+    d['settings_ver'] = SETTINGS_VER
+    return d
+
+
 def default_test():
     return {'name': '시험', 'description': '', 'duration': 120.0, 'criteria': dict(DEFAULT_CRITERIA), 'faults': [],
             'topics': {}}

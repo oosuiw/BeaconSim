@@ -87,9 +87,9 @@ def tabs(be, mode=None, start=False):
             _b('scn.beacon_light', '비콘 경광등 켜기', tip='끄면 야간에 운전자가 비콘을 훨씬 늦게 인지합니다 (인지 거리 0.9배 → 0.35배)')],
             'amber'),
         _card('마스트 (센서함)', 'layer', [
-            dict(t='note', text='비콘은 접힌 채로 배치됩니다. 재생 바의 "펴기" 버튼이나 U 키로 펴고 접습니다 '
-                              '(상위 제어기는 /beacon/deploy, std_msgs/Bool)'),
-            _b('scn.mast_auto', '시나리오 시작 후 자동으로 펴기 (회귀 시험용)'),
+            dict(t='note', text='비콘은 접힌 채로 배치되고 시작하면 자동으로 펴집니다. 재생 바의 "펴기/접기" 버튼이나 '
+                              'U 키로 언제든 펴고 접습니다 (상위 제어기는 /beacon/deploy, std_msgs/Bool)'),
+            _b('scn.mast_auto', '시작 후 자동으로 펴기'),
             _f('scn.mast_deploy_at', '자동 펴기 시각', 0, 60, '%.0f s', 1, enable='scn.mast_auto')]),
         _card('비콘 키보드 조작', 'keyboard', [
             dict(t='note', text='ROS /cmd_vel 이 들어오면 그쪽이 우선'),
