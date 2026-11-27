@@ -18,6 +18,7 @@ var acc_lights: Array = []
 var shown := {}
 var rain: GPUParticles3D
 var pending_capture := ""
+var pending_shm := false
 var pending_seq := 0
 var wait_frames := 0
 var label: Label
@@ -30,15 +31,26 @@ func _ready() -> void:
 		var kv: PackedStringArray = a.trim_prefix("--").split("=", true, 1)
 		args[kv[0]] = kv[1] if kv.size() > 1 else ""
 	var port := int(args.get("port", "47810"))
+	var reply_port := int(args.get("reply", str(port + 1)))
+	var hidden := args.has("hidden")
+	if hidden:   # GUI 연동: 최소화하면 렌더링이 멈추고 화면 밖 좌표는 창 관리자가 무시 → 1x1 투명 창, 클릭 통과
+		get_viewport().transparent_bg = true
+		DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, true)
+		DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_TRANSPARENT, true)
+		DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS, true)
+		DisplayServer.window_set_mouse_passthrough(PackedVector2Array([Vector2(0, 0), Vector2(0, 0), Vector2(0, 0)]))
+		DisplayServer.window_set_size(Vector2i(1, 1))
+		DisplayServer.window_set_title("BeaconSim 카메라 렌더러")
+		Engine.max_fps = 60
 	var js_path: String = args.get("scene", "")
 	info = JSON.parse_string(FileAccess.get_file_as_string(js_path))
-	_build_viewport()
+	_build_viewport(hidden)
 	_load_scene(js_path.get_base_dir().path_join("scene.glb"))
 	_build_env(info["env"])
 	_build_lights(info)
 	_build_weather(info["env"])
 	udp.bind(port, "127.0.0.1")
-	reply.set_dest_address("127.0.0.1", port + 1)
+	reply.set_dest_address("127.0.0.1", reply_port)
 	# 노이즈 텍스처(비동기 생성) 준비 대기 후 준비 완료 알림
 	await get_tree().create_timer(1.0).timeout
 	_send({"type": "ready"})
@@ -47,7 +59,7 @@ func _send(d: Dictionary) -> void:
 	reply.put_packet(JSON.stringify(d).to_utf8_buffer())
 
 # ------------------------------------------------------------------ 카메라 (오버스캔 핀홀, 왜곡은 파이썬에서)
-func _build_viewport() -> void:
+func _build_viewport(hidden := false) -> void:
 	var c: Dictionary = info["camera"]
 	sv = SubViewport.new()
 	sv.size = Vector2i(int(c["width"]), int(c["height"]))
@@ -69,6 +81,7 @@ func _build_viewport() -> void:
 	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	tr.set_anchors_preset(Control.PRESET_FULL_RECT)
 	var layer := CanvasLayer.new()
+	layer.visible = not hidden
 	add_child(layer)
 	layer.add_child(tr)
 	label = Label.new()
@@ -439,8 +452,9 @@ func _apply(msg: Dictionary) -> void:
 	label.text = "Godot %s  ·  t = %.1f s  ·  차량 %d  ·  %d fps" % [Engine.get_version_info()["string"], float(msg["t"]), now.size(), Engine.get_frames_per_second()]
 	if msg.has("capture"):
 		pending_capture = msg["capture"]
+		pending_shm = bool(msg.get("raw", false))
 		pending_seq = int(msg["seq"])
-		wait_frames = 24        # 볼류메트릭 안개 시간 누적 · 파티클 안정화
+		wait_frames = int(msg.get("settle", 24))   # 볼류메트릭 안개 시간 누적 · 파티클 안정화
 
 func _process(_dt: float) -> void:
 	while udp.get_available_packet_count() > 0:
@@ -459,5 +473,12 @@ func _process(_dt: float) -> void:
 			pending_capture = ""
 			await RenderingServer.frame_post_draw
 			var img := sv.get_texture().get_image()
-			img.save_png(path)
-			_send({"type": "captured", "seq": pending_seq, "path": path, "fps": Engine.get_frames_per_second()})
+			if pending_shm:              # 원시 RGB8 (공유 메모리 파일) — 스트리밍용
+				img.convert(Image.FORMAT_RGB8)
+				var f := FileAccess.open(path, FileAccess.WRITE)
+				f.store_buffer(img.get_data())
+				f.close()
+			else:
+				img.save_png(path)
+			_send({"type": "captured", "seq": pending_seq, "path": path, "w": img.get_width(), "h": img.get_height(),
+				"fps": Engine.get_frames_per_second()})

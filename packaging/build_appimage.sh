@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # BeaconSim AppImage 빌드.  사용: packaging/build_appimage.sh [버전]
 #   INTERNAL=1 packaging/build_appimage.sh 0.2.1-team  → 팀 내부용: 로봇 모델 + tele.csv 포함 (공개 배포 금지)
+#   WITH_GODOT=1 → Godot 4 실행 파일(third_party/godot/) 포함: 보기 탭에서 'Godot 고품질' 카메라 렌더러 사용 가능
 #  - 파이썬 3.10 독립 런타임(python-build-standalone) + 의존 패키지 + 코드/리소스 + RGL core(Apache-2.0)
 #  - 비콘 CAD 파생물(로봇 메시·포즈)과 tele.csv(라이선스 없음)는 넣지 않는다 → 첫 실행 시 STL 선택, Tele-15는 자체 패턴
 #  - 실행 PC에 ROS2 Humble이 있으면 AppRun이 setup.sh를 불러 rclpy 사용 (없으면 단독 실행)
@@ -36,7 +37,8 @@ rm -rf "$APPDIR/usr/python/lib/python3.10/idlelib" "$APPDIR/usr/python/lib/pytho
 echo "== 앱 리소스"
 R="$APPDIR/usr/share/beaconsim"
 mkdir -p "$R/third_party/rgl" "$R/LICENSES"
-cp -r beacon_sim config assets scenarios tools README.md "$R/"
+cp -r beacon_sim config assets scenarios tools godot README.md "$R/"
+rm -rf "$R/godot/.godot"
 rm -f "$R/config/robot.yaml"; find "$R" -name '__pycache__' -prune -exec rm -rf {} +
 if [ "${INTERNAL:-0}" = "1" ]; then
   echo "== 팀 내부용: 로봇 모델 + tele.csv 포함"
@@ -47,6 +49,14 @@ if [ "${INTERNAL:-0}" = "1" ]; then
   cp config/robot.yaml "$R/config/"
   cp third_party/ref/tele.csv "$R/third_party/ref/"
   printf '팀 내부용 빌드 — 비콘 CAD 파생물과 tele.csv 포함. 공개 배포하지 마세요.\n' > "$R/INTERNAL_BUILD.txt"
+fi
+if [ "${WITH_GODOT:-0}" = "1" ]; then
+  echo "== Godot 4 실행 파일 포함 (MIT, 고품질 카메라 렌더러)"
+  GB=$(ls third_party/godot/Godot_v4*_linux.x86_64 2>/dev/null | sort | tail -1)
+  [ -n "$GB" ] || { echo "third_party/godot/ 에 Godot_v4.x_linux.x86_64 없음"; exit 1; }
+  mkdir -p "$R/third_party/godot"; cp "$GB" "$R/third_party/godot/"
+  fetch https://raw.githubusercontent.com/godotengine/godot/master/LICENSE.txt "$DL/GODOT-LICENSE"
+  cp "$DL/GODOT-LICENSE" "$R/LICENSES/Godot-MIT.txt"
 fi
 unzip -q -o "$DL/rgl.zip" -d "$DL/rgl"
 cp "$(find "$DL/rgl" -name libRobotecGPULidar.so | head -1)" "$R/third_party/rgl/"

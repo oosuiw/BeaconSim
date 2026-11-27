@@ -25,15 +25,17 @@ SMOOTH = {'road', 'terrain', 'lane_white', 'lane_yellow'}      # 위를 향하�
 
 
 def godot_bin():
-    for p in (os.environ.get('BEACONSIM_GODOT', ''), os.path.join(ROOT, 'third_party', 'godot')):
+    from .common import USER_DIR
+    for p in (os.environ.get('BEACONSIM_GODOT', ''), os.path.join(ROOT, 'third_party', 'godot'),
+              os.path.join(USER_DIR, 'godot')):
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
         if os.path.isdir(p):
             for f in sorted(os.listdir(p), reverse=True):
                 if f.startswith('Godot_v4') and f.endswith('x86_64'):
                     return os.path.join(p, f)
-    raise FileNotFoundError('Godot 4 실행 파일 없음: third_party/godot/ 에 Godot_v4.x_linux.x86_64 를 두거나 '
-                            'BEACONSIM_GODOT 환경변수로 지정')
+    raise FileNotFoundError('Godot 4 실행 파일 없음: third_party/godot/ 또는 ~/.config/beaconsim/godot/ 에 '
+                            'Godot_v4.x_linux.x86_64 를 두거나 BEACONSIM_GODOT 환경변수로 지정')
 
 
 # ---------------------------------------------------------------- 좌표 변환
@@ -204,19 +206,58 @@ def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy):
     return glb, js, origin
 
 
-class GodotLink:
-    """Godot 렌더러 프로세스 + UDP 상태 송신 / 캡처 응답 수신."""
+def available():
+    try:
+        godot_bin()
+        return True
+    except FileNotFoundError:
+        return False
 
-    def __init__(self, scene_json, origin, T_b_opt, port=47810, window=(1280, 820), log=print):
+
+def project_dir():
+    """Godot 은 프로젝트 폴더에 .godot/ 캐시를 쓰므로, 읽기 전용(AppImage)이면 캐시 폴더로 복사해서 쓴다."""
+    if os.access(GODOT_DIR, os.W_OK):
+        return GODOT_DIR
+    import shutil
+    from .common import CACHE_DIR
+    dst = os.path.join(CACHE_DIR, 'godot_project')
+    os.makedirs(dst, exist_ok=True)
+    for f in ('project.godot', 'main.tscn', 'main.gd'):
+        shutil.copy2(os.path.join(GODOT_DIR, f), os.path.join(dst, f))
+    return dst
+
+
+def _free_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(('127.0.0.1', 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+class GodotLink:
+    """Godot 렌더러 프로세스 + UDP 상태 송신 / 캡처 응답 수신.
+
+    hidden=True: GUI 연동용 (창 최소화). request()/poll() 은 기다리지 않는 스트리밍 캡처 (공유 메모리 원시 RGB).
+    """
+
+    def __init__(self, scene_json, origin, T_b_opt, port=None, window=(1280, 820), hidden=False, log=print):
         self.origin, self.T_b_opt, self.log = origin, T_b_opt, log
-        self.addr = ('127.0.0.1', port)
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.rx.bind(('127.0.0.1', port + 1))
+        self.rx.bind(('127.0.0.1', 0))
+        port = port or _free_port()
+        self.addr = ('127.0.0.1', port)
         self.tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.seq = 0
-        cmd = [godot_bin(), '--path', GODOT_DIR, '--resolution', f'{window[0]}x{window[1]}', '--',
-               f'--scene={scene_json}', f'--port={port}']
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.pending = None
+        shm = '/dev/shm' if os.path.isdir('/dev/shm') else os.path.dirname(scene_json)
+        self.raw_path = os.path.join(shm, f'beaconsim_cam_{os.getpid()}_{port}.rgb')
+        cmd = [godot_bin(), '--path', project_dir(), '--resolution', f'{window[0]}x{window[1]}', '--',
+               f'--scene={scene_json}', f'--port={port}', f'--reply={self.rx.getsockname()[1]}']
+        if hidden:
+            cmd.append('--hidden')
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL if hidden else subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True)
         self._wait('ready', 60)
 
     def _wait(self, what, timeout):
@@ -224,7 +265,8 @@ class GodotLink:
         t0 = time.time()
         while time.time() - t0 < timeout:
             if self.proc.poll() is not None:
-                raise RuntimeError('Godot 종료됨:\n' + self.proc.stdout.read()[-3000:])
+                out = self.proc.stdout.read()[-3000:] if self.proc.stdout else ''
+                raise RuntimeError('Godot 종료됨:\n' + out)
             try:
                 msg = json.loads(self.rx.recv(65536).decode())
             except socket.timeout:
@@ -233,20 +275,62 @@ class GodotLink:
                 return msg
         raise TimeoutError(f'Godot 응답 없음 ({what})')
 
-    def send_state(self, eng, T_wb, traffic_T, active, capture=None):
+    def _state(self, eng_t, T_wb, traffic_T, active):
         self.seq += 1
         veh = [[int(i)] + xform_g(traffic_T[i], self.origin) for i in np.nonzero(active)[0]]
-        msg = {'type': 'state', 'seq': self.seq, 't': round(eng.t, 3),
-               'cam': xform_g(T_wb @ self.T_b_opt, self.origin, cam=True),
-               'robot': xform_g(T_wb, self.origin), 'veh': veh}
-        if capture:
-            msg['capture'] = capture
+        return {'type': 'state', 'seq': self.seq, 't': round(float(eng_t), 3),
+                'cam': xform_g(T_wb @ self.T_b_opt, self.origin, cam=True),
+                'robot': xform_g(T_wb, self.origin), 'veh': veh}
+
+    def _send(self, msg):
         data = json.dumps(msg, separators=(',', ':')).encode()
         if len(data) > 65000:
             raise ValueError('상태 패킷이 UDP 한도 초과')
         self.tx.sendto(data, self.addr)
+
+    def send_state(self, eng, T_wb, traffic_T, active, capture=None):
+        """비교 도구용: capture 경로가 있으면 PNG 저장까지 기다린다."""
+        msg = self._state(eng.t, T_wb, traffic_T, active)
+        if capture:
+            msg['capture'] = capture
+        self._send(msg)
         if capture:
             return self._wait('captured', 30)
+
+    # ---- 스트리밍 (GUI·ROS 카메라)
+    def request(self, t, T_wb, traffic_T, active, settle=2):
+        """캡처 요청 (응답을 기다리지 않음). 이전 요청이 아직이면 False."""
+        if self.pending is not None and time.time() - self.pending[1] < 2.0:
+            return False
+        msg = self._state(t, T_wb, traffic_T, active)
+        msg.update(capture=self.raw_path, raw=True, settle=settle)
+        self._send(msg)
+        self.pending = (self.seq, time.time(), t)
+        return True
+
+    def poll(self):
+        """완료된 캡처 → (sim 시각, RGB uint8 (H,W,3)) 또는 None."""
+        if self.pending is None:
+            return None
+        self.rx.settimeout(0.0)
+        while True:
+            try:
+                msg = json.loads(self.rx.recv(65536).decode())
+            except (BlockingIOError, socket.timeout):
+                return None
+            if msg.get('type') == 'captured' and msg.get('seq') == self.pending[0]:
+                t = self.pending[2]
+                self.pending = None
+                self.fps = msg.get('fps')
+                w, h = int(msg['w']), int(msg['h'])
+                img = np.fromfile(self.raw_path, np.uint8)
+                if img.size != w * h * 3:
+                    return None
+                return t, img.reshape(h, w, 3)
+
+    @property
+    def alive(self):
+        return self.proc.poll() is None
 
     def close(self):
         try:
@@ -256,6 +340,10 @@ class GodotLink:
             self.proc.kill()
         self.rx.close()
         self.tx.close()
+        try:
+            os.remove(self.raw_path)
+        except OSError:
+            pass
 
 
 def camera_T_b_opt(robot_cfg):

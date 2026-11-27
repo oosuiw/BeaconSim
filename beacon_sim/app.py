@@ -46,6 +46,7 @@ from .traffic import B_CRASH, ScenarioParams, TrafficParams
 from .app_start import MODE_KO, StartMixin, default_test
 from .evaluate import subscribe_eval
 from .session import TestSession
+from . import godot_link
 
 CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.config', 'beaconsim')
 FONT_CANDIDATES = [
@@ -262,6 +263,7 @@ class App(StartMixin):
         self.start_tab = 0
         self.export_pcd = True
         self.ui_zoom_user = float(st_.get('ui_zoom', 0.0) or 0.0)
+        self.cam_backend_saved = st_.get('cam_backend', 'moderngl')
         self.show = dict(terrain=True, tunnel=True, lanelet=False, vehicles=True, robot=True, markers=True,
                          pandar=True, tele=True, radar=True, gnss=True, scc=True, camera=True, env_view=True)
         self.pandar_color = 0              # 0 세기, 1 정답 라벨
@@ -279,6 +281,11 @@ class App(StartMixin):
         self.last_gnss_t = -1.0
         self.cam_next_t = 0.0
         self.cam_tex = None
+        # 카메라 렌더러: 'moderngl'(기본) | 'godot'(고품질, Godot 4 필요)
+        self.cam_backend = 'moderngl'
+        self.godot = self.godot_future = None
+        self.godot_ok = godot_link.available()
+        self.cam_backend = getattr(self, 'cam_backend_saved', 'moderngl') if self.godot_ok else 'moderngl'
         self.target_fbo = None
 
         self.model = self.parts = self.engine = self.eth = None
@@ -372,7 +379,7 @@ class App(StartMixin):
                              ('env', EnvParams)]:
                 if key in d:
                     out[key] = pick(cls, d[key])
-            for k in ('export_dir', 'rand_map', 'rand_scn', 'mode', 'test', 'ui_zoom'):
+            for k in ('export_dir', 'rand_map', 'rand_scn', 'mode', 'test', 'ui_zoom', 'cam_backend'):
                 if k in d:
                     out[k] = d[k]
         except Exception:           # noqa: BLE001
@@ -384,7 +391,8 @@ class App(StartMixin):
             json.dump({'params': self.params.to_dict(), 'scenario': self.sparams.to_dict(),
                        'traffic': self.tparams.to_dict(), 'env': self.eparams.to_dict(),
                        'export_dir': self.export_dir, 'rand_map': self.rand_map, 'rand_scn': self.rand_scn,
-                       'mode': self.mode_sel, 'test': self.test, 'ui_zoom': self.ui_zoom_user},
+                       'mode': self.mode_sel, 'test': self.test, 'ui_zoom': self.ui_zoom_user,
+                       'cam_backend': self.cam_backend},
                       f, indent=1)
 
     # ------------------------------------------------------------ 빌드 (맵/시나리오/엔진)
@@ -490,7 +498,50 @@ class App(StartMixin):
                  f'교통 {"켜짐" if eng.traffic.tp.enabled else "꺼짐(검증 모드)"}')
         if 'tele15' in eng.sensors:
             self.log(f'Tele-15 스캔 패턴: {eng.sensors["tele15"].pattern}')
+        self._start_godot()
         self._preset('beacon')
+
+    # ------------------------------------------------------------ Godot 카메라 렌더러
+    def _stop_godot(self):
+        if self.godot is not None:
+            g, self.godot = self.godot, None
+            self.pool.submit(g.close)
+
+    def _start_godot(self):
+        """현재 엔진 장면을 glb 로 내보내고 Godot 을 (최소화 창으로) 띄운다. 준비될 때까지는 기본 렌더러."""
+        self._stop_godot()
+        if self.cam_backend != 'godot' or self.engine is None:
+            return
+        if not self.godot_ok:
+            self.log('Godot 없음 → 기본 카메라 렌더러 사용')
+            self.cam_backend = 'moderngl'
+            return
+        eng, cam = self.engine, self.camera
+        from .common import CACHE_DIR
+
+        def job():
+            out = os.path.join(CACHE_DIR, 'godot_scene', str(os.getpid()))
+            _, js, origin = godot_link.export_scene(eng, out, self.base_cfg['camera'], cam.Wr, cam.Hr, cam.K[1, 1])
+            return eng, godot_link.GodotLink(js, origin, self.T_b_opt, hidden=True, log=self.log)
+        self.log('Godot 카메라 렌더러 준비 중...')
+        self.godot_future = self.pool.submit(job)
+
+    def _godot_frame(self):
+        f = self.godot_future
+        if f is None or not f.done():
+            return
+        self.godot_future = None
+        try:
+            eng, link = f.result()
+        except Exception as ex:      # noqa: BLE001
+            self.log(f'Godot 시작 실패 → 기본 렌더러: {ex}')
+            self.cam_backend = 'moderngl'
+            return
+        if eng is not self.engine or self.cam_backend != 'godot':      # 그 사이 장면이 바뀜
+            self.pool.submit(link.close)
+            return
+        self.godot = link
+        self.log('Godot 카메라 렌더러 사용 중')
 
     def export_async(self):
         if self.export_future and not self.export_future.done():
@@ -949,6 +1000,28 @@ class App(StartMixin):
         S.muted('Pandar 색상')
         self.pandar_color = S.segmented(['세기', '정답 라벨'], self.pandar_color)
         S.end_card()
+        S.begin_card('v_camr')
+        S.section(FA.ICON_FA_CAMERA, '카메라 렌더러')
+        k = 1 if self.cam_backend == 'godot' else 0
+        imgui.begin_disabled(not self.godot_ok)
+        nk = S.segmented(['기본 (moderngl)', 'Godot 고품질'], k)
+        imgui.end_disabled()
+        if not self.godot_ok:
+            S.tip('Godot 4 필요: third_party/godot/ 또는 ~/.config/beaconsim/godot/ 에 Godot_v4.x_linux.x86_64')
+        if nk != k:
+            self.cam_backend = 'godot' if nk else 'moderngl'
+            self._save_settings()
+            if nk:
+                self._start_godot()
+            else:
+                self._stop_godot()
+        if self.cam_backend == 'godot':
+            st = '준비 중...' if self.godot_future is not None else (
+                f'사용 중 · Godot {getattr(self.godot, "fps", None) or "-"} fps' if self.godot else '꺼짐')
+            S.muted(f'{st}  (카메라 창 + ROS 이미지 토픽)')
+        elif not self.godot_ok:
+            S.muted('Godot 4 를 설치하면 고품질 렌더 사용 가능')
+        S.end_card()
         S.begin_card('v_scene')
         S.section(FA.ICON_FA_LAYER_GROUP, '장면')
         for k, label in [('labels', '3D 이름표'), ('vehicles', '차량'), ('scc', 'SCC·운전자 상태 표시'), ('robot', '비콘'),
@@ -1158,6 +1231,9 @@ class App(StartMixin):
         if opened:
             S.chip('Arducam B0495', S.ACCENT, FA.ICON_FA_CAMERA)
             imgui.same_line()
+            S.chip('Godot' if self.godot is not None else ('Godot 준비 중' if self.godot_future else 'moderngl'),
+                   S.TEAL if self.godot is not None else S.MUTED)
+            imgui.same_line()
             S.chip(f'{self.camera.W}×{self.camera.H} · {self.base_cfg["camera"]["rate_hz"]:.0f} Hz · '
                    f'HFOV {self.camera.hfov:.0f}°', S.MUTED)
             imgui.same_line(imgui.get_window_width() - 34 * self.scale)
@@ -1182,6 +1258,12 @@ class App(StartMixin):
 
     def _update_camera_sensor(self, snap):
         """sim 시각 기준 카메라 주기마다 카메라 영상 렌더 (창 표시 또는 ROS 발행 시)."""
+        if self.cam_backend == 'godot' and self.godot is not None:
+            if self.godot.alive:
+                return self._update_camera_godot(snap)
+            self.log('Godot 프로세스 종료됨 → 기본 렌더러')
+            self.godot = None
+            self.cam_backend = 'moderngl'
         need_ros = self.ros is not None and self.ros.ok
         if not (self.show['camera'] or need_ros) or snap['t'] < self.cam_next_t:
             return
@@ -1189,8 +1271,27 @@ class App(StartMixin):
         T_wb = snap['T_wb']
         veh = list(self.engine.accident) + list(zip(self.engine.traffic.specs, snap['traffic_T']))
         img = self.camera.render(self.cam_scene, T_wb @ self.T_b_opt, T_wb, veh, self.engine.env)
+        self._deliver_camera(img, snap['t'])
+
+    def _update_camera_godot(self, snap):
+        """Godot: 요청은 카메라 주기마다, 결과는 도착하는 대로 (GUI 프레임을 막지 않음)."""
+        import cv2
+        g = self.godot
+        got = g.poll()
+        if got is not None:
+            t, raw = got
+            if raw.shape[:2] == (self.camera.Hr, self.camera.Wr):
+                img = cv2.remap(raw, self.camera.map_x, self.camera.map_y, cv2.INTER_LINEAR)   # 같은 렌즈 왜곡
+                self._deliver_camera(img, t)
+        need_ros = self.ros is not None and self.ros.ok
+        if (self.show['camera'] or need_ros) and snap['t'] >= self.cam_next_t:
+            if g.request(snap['t'], snap['T_wb'], snap['traffic_T'], snap['active']):
+                self.cam_next_t = snap['t'] + 1.0 / self.base_cfg['camera']['rate_hz']
+
+    def _deliver_camera(self, img, t):
+        need_ros = self.ros is not None and self.ros.ok
         if need_ros:
-            self.ros.publish_camera(img, snap['t'], self.camera, self.base_cfg['camera']['optical_frame'])
+            self.ros.publish_camera(img, t, self.camera, self.base_cfg['camera']['optical_frame'])
         if self.show['camera']:
             small = np.ascontiguousarray(img[::2, ::2])
             if self.cam_tex is None or self.cam_tex.size != (small.shape[1], small.shape[0]):
@@ -1321,6 +1422,7 @@ class App(StartMixin):
                 ov.draw('scc_lines', np.array(segs), SCC_BEACON, VP, moderngl.LINES)
 
     def frame(self, dt):
+        self._godot_frame()
         if self.robot_future is not None and self.robot_future.done():
             fut, self.robot_future = self.robot_future, None
             try:
@@ -1428,6 +1530,9 @@ class App(StartMixin):
             self._finish_test('프로그램 종료', show=False)
         if self.regress is not None:
             self.regress.stop()
+        if self.godot is not None:
+            self.godot.close()
+            self.godot = None
         self._save_settings()
         if self.eth is not None:
             self.eth.stop()
@@ -1450,6 +1555,7 @@ def main():
     ap.add_argument('--set', action='append', default=[], help='테스트용 파라미터 (예: env.weather=rain)')
     ap.add_argument('--robot-stl', default=None, help='비콘 CAD(STL)로 로봇 모델 생성 후 시작')
     ap.add_argument('--mode', choices=['dev', 'test'], default=None, help='시작 화면 없이 바로 이 모드로 시작')
+    ap.add_argument('--camera', choices=['moderngl', 'godot'], default=None, help='카메라 렌더러')
     ap.add_argument('--scenario', default=None, help='시나리오 YAML 불러오기 (--mode 와 함께)')
     ap.add_argument('--home-tab', type=int, default=None, help='테스트용: 시작 화면 모드 선택 (0 개발 1 시험 2 회귀)')
     a = ap.parse_args()
@@ -1458,6 +1564,8 @@ def main():
         build(a.robot_stl, writable_root(), True)
     w_, h_ = (int(v) for v in a.size.lower().split('x'))
     app = App(w_, h_, hidden=a.hidden, ros=not a.no_ros)
+    if a.camera:
+        app.cam_backend = a.camera if (a.camera != 'godot' or app.godot_ok) else 'moderngl'
     if a.home_tab is not None:
         app.mode_sel = ['dev', 'test', 'regress'][a.home_tab]
     if a.scenario:

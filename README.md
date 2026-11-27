@@ -188,4 +188,7 @@ Copyright (c) 2026 BeaconSim authors. All rights reserved. (LICENSE 참고)
   → `results/godot/<시각>/compare_<t>.png` (위: 기존, 아래: Godot, 같은 렌즈 왜곡 적용)
 - 실시간: `--live 30` (Godot 창에 카메라 주기로 송출)
 - 구성: `beacon_sim/godot_link.py` (glb·json 내보내기, UDP 상태 송신), `godot/` (Godot 프로젝트)
-- 아직: GUI·ROS 카메라 토픽 연동 전, 차량 창문·번호판 등 세부 모델 없음
+- GUI: 보기 탭 → 카메라 렌더러 "Godot 고품질" (또는 `--camera godot`). 카메라 창과 ROS 이미지 토픽이 Godot 영상으로 바뀐다.
+  Godot 은 1x1 투명 창으로 따로 실행되고(최소화하면 렌더링이 멈춤), 영상은 /dev/shm 으로 받는다. 맵·시나리오를 다시 만들면 약 5초 동안 기본 렌더러.
+- AppImage: `WITH_GODOT=1 packaging/build_appimage.sh` 로 Godot 실행 파일 포함. 없으면 `~/.config/beaconsim/godot/` 에 두면 된다.
+- 아직: 헤드리스(sim_core + camera_node) 경로는 기본 렌더러, 차량 창문·번호판 등 세부 모델 없음
