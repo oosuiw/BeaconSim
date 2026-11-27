@@ -1,0 +1,180 @@
+extends Node
+## UI 자체 시험 (--selftest=<폴더>): 실제 마우스·키 입력을 뷰포트에 주입해 사이드바·재생 바·단축키를 눌러 보고,
+## 단계마다 결과를 출력(SELFTEST ...)하고 화면을 저장한다. 사용자 마우스는 건드리지 않는다.
+
+var c: Node            # client.gd
+var out := ""
+var fails := 0
+
+func run(client: Node, dir: String) -> void:
+	c = client
+	out = dir
+	DirAccess.make_dir_recursive_absolute(out)
+	await _wait_world(-1)
+	await _sleep(2.0)
+	# 1) 교통 탭 → '접근 차량 켜기' 끄기 → 교통량 슬라이더 비활성
+	await _click(c.sidebar.tab_btns[2])
+	var cb: CheckBox = c.sidebar.binds["traffic.enabled"][0]["w"]
+	var was := cb.button_pressed
+	await _click(cb)
+	await _sleep(0.5)
+	_check("교통 끄기 체크박스", cb.button_pressed == (not was) and c.sidebar.vals["traffic.enabled"] == (not was))
+	var fl: HSlider = c.sidebar.binds["traffic.flow"][0]["w"]
+	_check("교통량 슬라이더 비활성", fl.editable == (not was))
+	await _shot("1_traffic_off")
+	# 2) R → 재시작, 교통 없으면 주행 차량 0
+	var seq: int = c.world_seq
+	await _key(KEY_R)
+	await _wait_world(seq)
+	await _sleep(2.0)
+	_check("R 재시작 → 새 월드", c.world_seq > seq)
+	if was:
+		_check("교통 꺼짐 → 주행 차량 0", int(c.st.get("n_active", -1)) == 0)
+	# 다시 켜 둔다 (시험 뒤 설정 복원)
+	await _click(cb)
+	# 3) 시나리오 탭: 방향키 속도 슬라이더 끌기
+	await _click(c.sidebar.tab_btns[1])
+	var ks: HSlider = c.sidebar.binds["key.speed"][0]["w"]
+	var before: float = ks.value
+	await _drag(ks, 0.2, 0.9)
+	await _sleep(0.6)
+	_check("슬라이더 끌기 → 값 변경·백엔드 반영 (%.1f → %.1f)" % [before, ks.value],
+		ks.value > before and absf(float(c.sidebar.vals["key.speed"]) - ks.value) < 1e-3)
+	# 4) 선택 상자: 사고 위치 = 개활지 (팝업 항목 클릭 대신 선택 신호)
+	var ob: OptionButton = c.sidebar.binds["scn.accident_where"][0]["w"]
+	ob.select(1)
+	ob.item_selected.emit(1)
+	await _sleep(0.5)
+	_check("선택 상자 → 값", c.sidebar.vals["scn.accident_where"] == "open")
+	await _shot("2_scenario")
+	# 5) 재생 바 P40 끄기 → 사이드바 보기 탭 체크박스도 같이 바뀜
+	await _click(c.toggles["pandar"])
+	await _sleep(0.3)
+	var vb: CheckBox = c.sidebar.binds["view.pandar"][0]["w"]
+	_check("재생 바 P40 끄기 → 점군 숨김·보기 탭 동기화", not c.show["pandar"] and not vb.button_pressed)
+	# 6) 보기 탭: 범례 끄기, Pandar 색 = 정답 라벨
+	await _click(c.sidebar.tab_btns[4])
+	var lg: CheckBox = c.sidebar.binds["view.legend"][0]["w"]
+	await _click(lg)
+	await _sleep(0.3)
+	_check("범례 끄기", not c.legend_box.visible)
+	var seg: Array = c.sidebar.binds["view.pandar_color"][0]["bs"]
+	await _click(seg[1])
+	await _sleep(0.3)
+	_check("Pandar 색 = 정답 라벨", c.pandar_color == 1)
+	await _click(c.toggles["pandar"])
+	await _shot("3_view")
+	# 7) 일시정지 (Space), F1 도움말, Esc 닫기
+	await _key(KEY_SPACE)
+	await _sleep(0.5)
+	_check("Space 일시정지", c.st.get("paused", false))
+	await _key(KEY_SPACE)
+	await _key(KEY_F1)
+	_check("F1 도움말 열림", c.help_layer.visible)
+	await _shot("4_help")
+	await _key(KEY_ESCAPE)
+	_check("Esc 도움말 닫힘", not c.help_layer.visible)
+	# 8) 마우스 휠: 사이드바 위에서는 3D 확대 안 됨
+	var d0: float = c.orbit["dist"]
+	await _wheel(c.sidebar.get_global_rect().get_center())
+	_check("사이드바 위 휠 → 3D 시점 그대로", absf(c.orbit["dist"] - d0) < 1e-6)
+	d0 = c.orbit["dist"]
+	await _wheel(_pt(c.playbar))
+	_check("재생 바 위 휠 → 3D 시점 그대로", absf(c.orbit["dist"] - d0) < 1e-6)
+	await _wheel(_pt(c.cam_panel))
+	_check("카메라 패널 위 휠 → 3D 시점 그대로", absf(c.orbit["dist"] - d0) < 1e-6)
+	await _wheel(_pt(c.sidebar.tab_grid))
+	_check("사이드바 머리글 위 휠 → 3D 시점 그대로", absf(c.orbit["dist"] - d0) < 1e-6)
+	var vs: Vector2 = c.get_viewport().get_visible_rect().size
+	await _wheel(Vector2((vs.x + 380) / 2.0, vs.y / 2.0))
+	_check("3D 위 휠 → 확대", c.orbit["dist"] < d0)
+	# 원복: 범례·색
+	await _click(seg[0])
+	await _click(lg)
+	print("SELFTEST DONE fails=%d" % fails)
+	c._send({"type": "quit"})
+	c.get_tree().quit()
+
+func _check(name: String, ok: bool) -> void:
+	if not ok:
+		fails += 1
+	print("SELFTEST %s  %s" % ["OK  " if ok else "FAIL", name])
+
+func _sleep(s: float) -> void:
+	await c.get_tree().create_timer(s).timeout
+
+func _wait_world(prev: int) -> void:
+	while c.world == null or c.world_seq == prev or c.st.is_empty() or int(c.st.get("world", -1)) != c.world_seq:
+		await c.get_tree().process_frame
+
+func _shot(name: String) -> void:
+	await _sleep(0.4)
+	await RenderingServer.frame_post_draw
+	c.get_viewport().get_texture().get_image().save_png(out.path_join(name + ".png"))
+
+## 화면 좌표 변환: 컨트롤 전역 좌표(UI 배율 적용 전) → 뷰포트 입력 좌표
+func _pt(ctrl: Control, fx := 0.5) -> Vector2:
+	var r := ctrl.get_global_rect()
+	return Vector2(r.position.x + r.size.x * fx, r.position.y + r.size.y * 0.5)
+
+func _push_mouse(pos: Vector2, pressed: bool, button := MOUSE_BUTTON_LEFT) -> void:
+	var e := InputEventMouseButton.new()
+	e.position = pos
+	e.global_position = pos
+	e.button_index = button
+	e.pressed = pressed
+	if pressed and button == MOUSE_BUTTON_LEFT:
+		e.button_mask = MOUSE_BUTTON_MASK_LEFT
+	c.get_viewport().push_input(e, true)
+
+func _move(pos: Vector2, rel: Vector2, mask: int) -> void:
+	var e := InputEventMouseMotion.new()
+	e.position = pos
+	e.global_position = pos
+	e.relative = rel
+	e.button_mask = mask
+	c.get_viewport().push_input(e, true)
+
+func _click(ctrl: Control) -> void:
+	if c.sidebar.scroll.is_ancestor_of(ctrl):
+		c.sidebar.scroll.ensure_control_visible(ctrl)
+		await c.get_tree().process_frame
+	var p := _pt(ctrl)
+	_move(p, Vector2.ZERO, 0)
+	await c.get_tree().process_frame
+	_push_mouse(p, true)
+	await c.get_tree().process_frame
+	_push_mouse(p, false)
+	await c.get_tree().process_frame
+	await c.get_tree().process_frame
+
+func _drag(ctrl: Control, f0: float, f1: float) -> void:
+	var p0 := _pt(ctrl, f0)
+	var p1 := _pt(ctrl, f1)
+	_move(p0, Vector2.ZERO, 0)
+	await c.get_tree().process_frame
+	_push_mouse(p0, true)
+	await c.get_tree().process_frame
+	for i in range(1, 11):
+		var p := p0.lerp(p1, i / 10.0)
+		_move(p, (p1 - p0) / 10.0, MOUSE_BUTTON_MASK_LEFT)
+		await c.get_tree().process_frame
+	_push_mouse(p1, false)
+	await c.get_tree().process_frame
+
+func _wheel(pos: Vector2) -> void:
+	_move(pos, Vector2.ZERO, 0)
+	await c.get_tree().process_frame
+	_push_mouse(pos, true, MOUSE_BUTTON_WHEEL_UP)
+	_push_mouse(pos, false, MOUSE_BUTTON_WHEEL_UP)
+	await c.get_tree().process_frame
+	await c.get_tree().process_frame
+
+func _key(k: Key) -> void:
+	for pressed in [true, false]:
+		var e := InputEventKey.new()
+		e.keycode = k
+		e.physical_keycode = k
+		e.pressed = pressed
+		c.get_viewport().push_input(e, true)
+		await c.get_tree().process_frame

@@ -1,5 +1,6 @@
 """설정 로드, 좌표 변환, 로봇 모델/URDF 공용 함수."""
 import os
+import re
 
 import numpy as np
 import yaml
@@ -129,3 +130,20 @@ def build_urdf(robot_cfg):
             joint(s['frame_id'], 'camera_optical_link', (0, 0, 0), (-np.pi / 2, 0, -np.pi / 2))
     lines.append('</robot>')
     return '\n'.join(lines)
+
+def apply_to_sim_config(blocks, path=None):
+    """config/sim.yaml 의 블록(map/scenario/traffic/environment)을 교체 (주석·다른 설정 유지).
+    저장소에서 실행하면 저장소 파일, AppImage면 ~/.config/beaconsim/config/sim.yaml."""
+    path = path or os.path.join(writable_root(), 'config', 'sim.yaml')
+    src = path if os.path.exists(path) else resource(os.path.join('config', 'sim.yaml'))
+    with open(src) as f:
+        text = f.read()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for name, vals in blocks.items():
+        block = f'{name}:\n' + ''.join(f'  {k}: {v}\n' for k, v in vals.items())
+        text, n = re.subn(rf'^{name}:\n(?:[ \t]+.*\n)*', block, text, count=1, flags=re.M)
+        if n == 0:
+            text += '\n' + block
+    with open(path, 'w') as f:
+        f.write(text)
+    return path

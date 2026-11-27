@@ -1,41 +1,15 @@
 extends Node3D
-## BeaconSim 앱 (Godot 프런트엔드, 1단계). 백엔드(beacon_sim/server.py)와 TCP 로 연결.
-## 화면: 3D 월드(고품질) + 센서 표시 + 재생 바 / 상황판 / 이벤트 / 카메라 패널. 조작: 마우스 시점, 방향키 비콘 주행.
+## BeaconSim 앱 (Godot 프런트엔드). 백엔드(beacon_sim/server.py)와 TCP 로 연결.
+## 화면: 3D 월드(고품질) + 센서 표시 + 사이드바(설정 탭·이벤트) / 재생 바 / 상황판 / 카메라 패널 / 도움말.
+## 조작: 마우스 시점, 방향키 비콘 주행, 단축키 (F1 도움말).
 
 const BeaconWorld = preload("res://world.gd")
+const K = preload("res://ui_kit.gd")
+const Sidebar = preload("res://sidebar.gd")
 
-# 색 (ui_style.py 와 같은 팔레트)
-const BG0 := Color(0.055, 0.067, 0.086, 0.92)
-const BG1 := Color(0.082, 0.098, 0.125, 1.0)
-const BG2 := Color(0.118, 0.137, 0.170, 1.0)
-const BG3 := Color(0.160, 0.185, 0.225, 1.0)
-const TEXT := Color(0.902, 0.918, 0.941)
-const MUTED := Color(0.545, 0.588, 0.647)
-const ACCENT := Color(0.302, 0.639, 1.0)
-const TEAL := Color(0.169, 0.831, 0.773)
-const OK := Color(0.239, 0.863, 0.518)
-const WARN := Color(1.0, 0.722, 0.302)
-const DANGER := Color(1.0, 0.353, 0.373)
-const SCC := Color(0.780, 0.490, 1.0)
-const AMBER := Color(1.0, 0.600, 0.200)
-# Font Awesome 6 Solid
-const I_PLAY := 0xf04b
-const I_PAUSE := 0xf04c
-const I_ROTATE := 0xf01e
-const I_MAP := 0xf279
-const I_CLOCK := 0xf017
-const I_LINK := 0xf0c1
-const I_DOT := 0xf192
-const I_BULLSEYE := 0xf140
-const I_WIFI := 0xf1eb
-const I_SAT := 0xf7bf
-const I_CAMERA := 0xf030
-const I_GAMEPAD := 0xf11b
-const I_TOWER := 0xf519
-const I_CAR := 0xf5e4
-const I_BURST := 0xf5e1
-const I_INFO := 0xf05a
-const I_XMARK := 0xf00d
+const SENSOR_MASK := 1 | 2 | 8 | 16 | 32      # 센서 카메라: 오버레이(4) 빼고 전부
+const VIEW_KEYS := ["pandar", "tele", "radar", "radar_fov", "gnss", "camera", "labels", "vehicles", "scc", "robot",
+	"markers", "lanelet", "terrain", "tunnel", "auto_roof", "env_view", "legend"]
 
 var args := {}
 var tcp := StreamPeerTCP.new()
@@ -53,8 +27,11 @@ var rain_main: GPUParticles3D
 var rain_sensor: GPUParticles3D
 var orbit := {"target": Vector3.ZERO, "dist": 30.0, "yaw": 0.0, "pitch": deg_to_rad(20)}
 var follow := true
-var show := {"pandar": true, "tele": true, "radar": true, "gnss": true, "camera": true, "scc": true,
-	"labels": true, "lanelet": false, "env_view": true, "auto_roof": true}
+var show := {"pandar": true, "tele": true, "radar": true, "radar_fov": false, "gnss": true, "camera": true,
+	"labels": true, "vehicles": true, "scc": true, "robot": true, "markers": true, "lanelet": false, "terrain": true,
+	"tunnel": true, "auto_roof": true, "env_view": true, "legend": true}
+var pandar_color := 0
+var ui_zoom := 0.0
 var veh_dims: Array = []
 var robot_T := Transform3D()
 var drive_t := 0.0
@@ -62,9 +39,12 @@ var cam_next := 0.0
 var cam_busy := false
 # 오버레이
 var pc_nodes := {}
+var pandar_last := {}
 var radar_pts: MeshInstance3D
 var radar_boxes: MultiMeshInstance3D
 var radar_edges: MultiMeshInstance3D
+var fan_node: Node3D
+var fan_local := Transform3D()
 var gnss_mesh: MeshInstance3D
 var gnss_trail := PackedVector3Array()
 var gnss_trail_col := PackedColorArray()
@@ -72,15 +52,19 @@ var truth_trail := PackedVector3Array()
 var trail_mesh: MeshInstance3D
 var last_gnss_t := -1.0
 var scc_mesh: MeshInstance3D
+var scc_lines: MeshInstance3D
 var lane_mesh: MeshInstance3D
 var acc_mesh: MeshInstance3D
 var lbl_acc: Label3D
 var lbl_beacon: Label3D
+var veh_lbls: Array = []
 # UI
 var font_body: FontFile
 var font_bold: FontFile
 var ui: Control
+var sidebar: PanelContainer
 var loading: Label
+var playbar: PanelContainer
 var btn_pause: Button
 var speed_btns: Array = []
 var lbl_time: Label
@@ -89,9 +73,10 @@ var lbl_cmd: Label
 var lbl_ros: Label
 var toggles := {}
 var dash := {}
-var log_box: VBoxContainer
-var log_lines: Array = []
+var dash_panel: PanelContainer
+var legend_box: VBoxContainer
 var cam_panel: PanelContainer
+var help_layer: Control
 var shot_path := ""
 var shot_at := -1.0
 
@@ -113,6 +98,10 @@ func start(a: Dictionary) -> void:
 	get_window().size_changed.connect(_on_resize)
 	_on_resize()
 	tcp.connect_to_host("127.0.0.1", int(args.get("port", "0")))
+	if args.has("selftest"):
+		var t: Node = preload("res://selftest.gd").new()
+		add_child(t)
+		t.run(self, args["selftest"])
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -121,7 +110,9 @@ func _notification(what: int) -> void:
 
 func _on_resize() -> void:
 	var s := get_window().size
-	var z := clampf(minf(s.y / 1000.0, s.x / 1700.0), 0.75, 3.0)
+	var z := ui_zoom
+	if z <= 0.0:
+		z = clampf(minf(s.y / 1000.0, s.x / 1700.0), 0.75, 3.0)
 	get_window().content_scale_factor = snappedf(z, 0.05)
 
 func _neutral_env() -> Environment:
@@ -192,6 +183,14 @@ func _handle(m: Dictionary, bin: PackedByteArray) -> void:
 			hello = m
 			_load_fonts(m["fonts"], m["icons"])
 			_setup_sensor_camera(m["camera"])
+			sidebar.set_version(str(m["version"]))
+		"ui":
+			sidebar.set_tabs(m["tabs"])
+		"values":
+			sidebar.set_values(m["values"])
+			_apply_view()
+		"info":
+			sidebar.set_info(m["info"])
 		"world":
 			_on_world(m, bin)
 		"pc":
@@ -200,11 +199,55 @@ func _handle(m: Dictionary, bin: PackedByteArray) -> void:
 			_on_radar(m, bin)
 		"log":
 			for ln in m["lines"]:
-				_add_log(ln)
+				sidebar.add_log(ln)
 		"cam_req":
 			_capture_for_ros(m)
 		"bye":
 			get_tree().quit()
+
+# ================================================================== 설정 값 (사이드바·재생 바 → 백엔드)
+func _on_edit(k: String, v: Variant) -> void:
+	if k == "view.ui_zoom_auto" and not v:                  # 자동 끔 → 지금 배율에서 시작
+		var cur := get_window().content_scale_factor
+		_send({"type": "set", "k": k, "v": v})
+		sidebar.set_widget(k, v)
+		k = "view.ui_zoom"
+		v = snappedf(cur, 0.05)
+	sidebar.set_widget(k, v)
+	if k == "view.follow":
+		follow = bool(v)
+		return
+	_send({"type": "set", "k": k, "v": v})
+	if k.begins_with("view."):
+		_apply_view()
+
+func _on_action(name: String) -> void:
+	if name.begins_with("preset:"):
+		_preset(name.trim_prefix("preset:"))
+		return
+	_send({"type": "action", "name": name})
+
+## 화면 표시 값(view.*)을 3D·UI 에 반영
+func _apply_view() -> void:
+	var vals: Dictionary = sidebar.vals
+	for k in VIEW_KEYS:
+		if vals.has("view." + k):
+			show[k] = bool(vals["view." + k])
+	for k in toggles:
+		toggles[k].set_pressed_no_signal(show[k])
+	var pc := int(vals.get("view.pandar_color", 0))
+	if pc != pandar_color:
+		pandar_color = pc
+		_show_pandar()
+	var z := 0.0 if vals.get("view.ui_zoom_auto", true) else float(vals.get("view.ui_zoom", 0.0))
+	if z != ui_zoom:
+		ui_zoom = z
+		_on_resize()
+	if int(vals.get("view.log_filter", 0)) != sidebar.feed_filter:
+		sidebar._set_feed_filter(int(vals.get("view.log_filter", 0)), false)
+	sidebar.set_widget("view.follow", follow)
+	legend_box.visible = show["legend"]
+	_set_main_env()
 
 # ================================================================== 월드
 func _on_world(m: Dictionary, bin: PackedByteArray) -> void:
@@ -224,6 +267,7 @@ func _on_world(m: Dictionary, bin: PackedByteArray) -> void:
 	_set_main_env()
 	for k in pc_nodes:
 		pc_nodes[k].mesh = null
+	pandar_last = {}
 	gnss_trail = PackedVector3Array()
 	gnss_trail_col = PackedColorArray()
 	truth_trail = PackedVector3Array()
@@ -232,13 +276,16 @@ func _on_world(m: Dictionary, bin: PackedByteArray) -> void:
 		var p := _arr(m, bin, "lane_pts").to_vector3_array()
 		var c := _arr(m, bin, "lane_cols").to_color_array()
 		lane_mesh.mesh = _prim_mesh(Mesh.PRIMITIVE_LINES, p, c)
+	if m.has("arrays") and m["arrays"].has("fan_tri") and m.get("radar_T") != null:
+		_build_fan(_arr(m, bin, "fan_tri").to_vector3_array(), _arr(m, bin, "fan_col").to_color_array(),
+			_arr(m, bin, "fan_edge").to_vector3_array())
+		fan_local = BeaconWorld.xf(m["radar_T"])
 	var a: Array = m["accident"]
 	var ap := Vector3(a[0], a[1], a[2])
 	acc_mesh.mesh = _prim_mesh(Mesh.PRIMITIVE_LINES, PackedVector3Array([ap, ap + Vector3(0, 6, 0)]),
-		PackedColorArray([AMBER, AMBER]))
+		PackedColorArray([K.AMBER, K.AMBER]))
 	lbl_acc.position = ap + Vector3(0, 6.6, 0)
 	loading.visible = false
-	follow = true
 	_preset("beacon")
 
 func _set_main_env() -> void:
@@ -251,10 +298,13 @@ func _on_state(m: Dictionary, bin: PackedByteArray) -> void:
 	st = m
 	robot_T = BeaconWorld.xf(m["robot"])
 	world.set_robot(m["robot"])
-	world.set_vehicles(_arr(m, bin, "veh_idx").to_int32_array(), _arr(m, bin, "veh_T").to_float32_array())
+	var idx := _arr(m, bin, "veh_idx").to_int32_array()
+	var T := _arr(m, bin, "veh_T").to_float32_array()
+	world.set_vehicles(idx, T)
 	if sensor_cam:
 		sensor_cam.transform = BeaconWorld.xf(m["cam"])
-	_update_scc(m, bin)
+	fan_node.transform = robot_T * fan_local
+	_update_scc(idx, T, _arr(m, bin, "veh_flags"), _arr(m, bin, "veh_kmh").to_float32_array())
 	_update_gnss(m.get("gnss"))
 	lbl_beacon.position = robot_T.origin + Vector3(0, 1.8, 0)
 	if follow:
@@ -273,6 +323,15 @@ func _pt_mat(size: float, alpha := false) -> StandardMaterial3D:
 		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	return m
 
+func _line_mat(alpha := false) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.vertex_color_use_as_albedo = true
+	m.disable_fog = true
+	if alpha:
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	return m
+
 func _prim_mesh(prim: int, p: PackedVector3Array, c: PackedColorArray) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	if p.size() == 0:
@@ -284,12 +343,12 @@ func _prim_mesh(prim: int, p: PackedVector3Array, c: PackedColorArray) -> ArrayM
 	mesh.add_surface_from_arrays(prim, arr)
 	return mesh
 
-func _mi(mat: Material) -> MeshInstance3D:
+func _mi(mat: Material, parent: Node = null) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.material_override = mat
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	mi.layers = 4                         # 레이어 3: 센서 카메라에는 안 보임
-	add_child(mi)
+	(parent if parent else self).add_child(mi)
 	return mi
 
 func _build_overlays() -> void:
@@ -322,20 +381,42 @@ func _build_overlays() -> void:
 	ec.resize(ep.size())
 	ec.fill(Color(1.0, 0.55, 0.1))
 	var em := _prim_mesh(Mesh.PRIMITIVE_LINES, ep, ec)
-	em.surface_set_material(0, _pt_mat(1.0))
+	em.surface_set_material(0, _line_mat())
 	radar_edges = MultiMeshInstance3D.new()
 	radar_edges.layers = 4
 	radar_edges.multimesh = MultiMesh.new()
 	radar_edges.multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	radar_edges.multimesh.mesh = em
 	add_child(radar_edges)
-	gnss_mesh = _mi(_pt_mat(1.0))
+	fan_node = Node3D.new()
+	add_child(fan_node)
+	gnss_mesh = _mi(_line_mat())
 	trail_mesh = _mi(_pt_mat(3.0))
 	scc_mesh = _mi(_pt_mat(9.0))
-	lane_mesh = _mi(_pt_mat(1.0))
-	acc_mesh = _mi(_pt_mat(1.0))
-	lbl_acc = _label3d("사고 현장", AMBER)
-	lbl_beacon = _label3d("비콘", WARN)
+	scc_lines = _mi(_line_mat())
+	lane_mesh = _mi(_line_mat())
+	acc_mesh = _mi(_line_mat())
+	lbl_acc = _label3d("사고 현장", K.AMBER)
+	lbl_beacon = _label3d("비콘", K.WARN)
+	for i in range(24):
+		var l := _label3d("", K.SCC)
+		l.visible = false
+		veh_lbls.append(l)
+
+## 레이더 감지 범위 면 (레이더 좌표 → fan_node 아래, 매 상태마다 비콘 자세로 옮김)
+func _build_fan(tri: PackedVector3Array, col: PackedColorArray, edge: PackedVector3Array) -> void:
+	for c in fan_node.get_children():
+		c.queue_free()
+	var fm := _line_mat(true)
+	fm.cull_mode = BaseMaterial3D.CULL_DISABLED
+	fm.albedo_color = Color(1, 1, 1, 0.55)
+	var f := _mi(fm, fan_node)
+	f.mesh = _prim_mesh(Mesh.PRIMITIVE_TRIANGLES, tri, col)
+	var ec := PackedColorArray()
+	ec.resize(edge.size())
+	ec.fill(Color(1.0, 0.40, 0.40, 0.8))
+	var e := _mi(_line_mat(true), fan_node)
+	e.mesh = _prim_mesh(Mesh.PRIMITIVE_LINES, edge, ec)
 
 func _label3d(text: String, col: Color) -> Label3D:
 	var l := Label3D.new()
@@ -349,7 +430,6 @@ func _label3d(text: String, col: Color) -> Label3D:
 	l.modulate = col
 	l.outline_modulate = Color(0.05, 0.06, 0.08, 0.85)
 	l.layers = 4
-	l.set_meta("col", col)
 	add_child(l)
 	return l
 
@@ -359,7 +439,17 @@ func _on_pc(m: Dictionary, bin: PackedByteArray) -> void:
 		return
 	var xyz := _arr(m, bin, "xyz").to_vector3_array()
 	var col := _arr(m, bin, "col").to_color_array()
+	if name == "pandar":
+		pandar_last = {"xyz": xyz, "col": col, "col2": _arr(m, bin, "col2").to_color_array()}
+		_show_pandar()
+		return
 	pc_nodes[name].mesh = _prim_mesh(Mesh.PRIMITIVE_POINTS, xyz, col)
+
+func _show_pandar() -> void:
+	if pandar_last.is_empty():
+		return
+	pc_nodes["pandar"].mesh = _prim_mesh(Mesh.PRIMITIVE_POINTS, pandar_last["xyz"],
+		pandar_last["col2"] if pandar_color == 1 else pandar_last["col"])
 
 func _on_radar(m: Dictionary, bin: PackedByteArray) -> void:
 	var xyz := _arr(m, bin, "xyz").to_vector3_array()
@@ -413,50 +503,52 @@ func _update_gnss(g) -> void:
 	cs.fill(col)
 	gnss_mesh.mesh = _prim_mesh(Mesh.PRIMITIVE_LINES, pts, cs)
 
-func _update_scc(m: Dictionary, bin: PackedByteArray) -> void:
-	if not show["scc"]:
-		scc_mesh.mesh = null
-		return
-	var idx := _arr(m, bin, "veh_idx").to_int32_array()
-	var T := _arr(m, bin, "veh_T").to_float32_array()
-	var fl := _arr(m, bin, "veh_flags")
+## SCC·운전자 상태 점 + SCC 추종 선 + 차량 이름표 (추돌 / SCC 추종 속도)
+func _update_scc(idx: PackedInt32Array, T: PackedFloat32Array, fl: PackedByteArray, kmh: PackedFloat32Array) -> void:
 	var pts := PackedVector3Array()
 	var cols := PackedColorArray()
 	var lines := PackedVector3Array()
 	var bpos := robot_T.origin + Vector3(0, 0.5, 0)
+	var nl := 0
+	var lbl_on: bool = show["labels"] and show["vehicles"]
 	for k in range(idx.size()):
 		var f := fl[k]
+		var tr := BeaconWorld.xf_at(T, k)
+		var d: Array = veh_dims[idx[k]]
+		# 이름표: 비콘 300 m 안
+		if lbl_on and nl < veh_lbls.size() and (f & 3) and tr.origin.distance_to(robot_T.origin) < 300.0:
+			var l: Label3D = veh_lbls[nl]
+			nl += 1
+			var crashed := (f & 1) != 0
+			l.text = "●  " + ("추돌" if crashed else "SCC 추종 %.0f km/h" % kmh[k])
+			l.modulate = K.DANGER if crashed else K.SCC
+			l.position = tr.origin + tr.basis.y * (float(d[2]) + 1.4)
+			l.visible = true
 		if not (f & 16):
 			continue
 		var col: Color
 		if f & 1:
-			col = DANGER
+			col = K.DANGER
 		elif f & 2:
-			col = SCC
+			col = K.SCC
 		elif f & 4:
-			col = WARN
+			col = K.WARN
 		elif f & 8:
-			col = TEAL
+			col = K.TEAL
 		else:
 			continue
-		var tr := BeaconWorld.xf_at(T, k)
-		var d: Array = veh_dims[idx[k]]
 		pts.append(tr.origin + tr.basis.y * (float(d[2]) + 0.6))
 		cols.append(col)
 		if f & 2:
 			lines.append(tr.origin + tr.basis.x * (float(d[0]) / 2.0) + tr.basis.y * 0.8)
 			lines.append(bpos)
-	var mesh := _prim_mesh(Mesh.PRIMITIVE_POINTS, pts, cols)
-	if lines.size():
-		var lc := PackedColorArray()
-		lc.resize(lines.size())
-		lc.fill(SCC)
-		var arr := []
-		arr.resize(Mesh.ARRAY_MAX)
-		arr[Mesh.ARRAY_VERTEX] = lines
-		arr[Mesh.ARRAY_COLOR] = lc
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arr)
-	scc_mesh.mesh = mesh
+	for i in range(nl, veh_lbls.size()):
+		veh_lbls[i].visible = false
+	scc_mesh.mesh = _prim_mesh(Mesh.PRIMITIVE_POINTS, pts, cols)
+	var lc := PackedColorArray()
+	lc.resize(lines.size())
+	lc.fill(K.SCC)
+	scc_lines.mesh = _prim_mesh(Mesh.PRIMITIVE_LINES, lines, lc)
 
 # ================================================================== 카메라 (센서)
 func _setup_sensor_camera(c: Dictionary) -> void:
@@ -470,7 +562,7 @@ func _setup_sensor_camera(c: Dictionary) -> void:
 	sensor_cam.fov = float(c["vfov"])
 	sensor_cam.near = 0.1
 	sensor_cam.far = 3000.0
-	sensor_cam.cull_mask = 1 | 2           # 오버레이(레이어 3) 제외, 터널(레이어 2)은 항상
+	sensor_cam.cull_mask = SENSOR_MASK
 	sensor_cam.current = true
 	sensor_sv.add_child(sensor_cam)
 	var tr: TextureRect = cam_panel.get_node("v/img")
@@ -518,8 +610,19 @@ func _preset(name: String) -> void:
 		orbit["target"] = Vector3(t[0], t[1], t[2])
 		orbit["dist"] = 70.0
 		orbit["pitch"] = deg_to_rad(20)
+	sidebar.set_widget("view.follow", follow)
+
+func _set_follow(on: bool) -> void:
+	follow = on
+	sidebar.set_widget("view.follow", follow)
 
 func _unhandled_input(ev: InputEvent) -> void:
+	if ev is InputEventMouseButton and ev.pressed:
+		get_viewport().gui_release_focus()
+	if help_layer.visible:
+		if ev is InputEventKey and ev.pressed and (ev as InputEventKey).physical_keycode in [KEY_ESCAPE, KEY_F1]:
+			help_layer.visible = false
+		return
 	if ev is InputEventMouseMotion:
 		var mm := ev as InputEventMouseMotion
 		var d := mm.relative
@@ -527,7 +630,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 			orbit["yaw"] -= d.x * 0.005
 			orbit["pitch"] = clampf(orbit["pitch"] + d.y * 0.005, deg_to_rad(2), deg_to_rad(89))
 		elif mm.button_mask & (MOUSE_BUTTON_MASK_RIGHT | MOUSE_BUTTON_MASK_MIDDLE):
-			follow = false
+			_set_follow(false)
 			var k: float = orbit["dist"] * 0.0015
 			var y: float = orbit["yaw"]
 			var fwd := Vector3(cos(y), 0, -sin(y))
@@ -544,31 +647,34 @@ func _unhandled_input(ev: InputEvent) -> void:
 			KEY_SPACE:
 				_toggle_pause()
 			KEY_R:
-				_send({"type": "restart"})
+				_on_action("restart")
 			KEY_G:
-				_send({"type": "restart", "map": true})
+				_on_action("regen_map")
 			KEY_F:
-				follow = not follow
+				_set_follow(not follow)
 			KEY_1:
 				_preset("beacon")
 			KEY_2:
 				_preset("overview")
 			KEY_3:
 				_preset("tunnel")
+			KEY_F1:
+				help_layer.visible = true
 
+## 방향키: 단위 명령(-1~1)을 보내고 백엔드가 방향키 속도·회전 설정을 곱한다
 func _drive(dt: float) -> void:
-	if get_viewport().gui_get_focus_owner() != null:
+	if get_viewport().gui_get_focus_owner() != null or help_layer.visible:
 		return
 	var v := 0.0
 	var w := 0.0
 	if Input.is_physical_key_pressed(KEY_UP):
-		v += 1.5
+		v += 1.0
 	if Input.is_physical_key_pressed(KEY_DOWN):
-		v -= 1.5
+		v -= 1.0
 	if Input.is_physical_key_pressed(KEY_LEFT):
-		w += 0.6
+		w += 1.0
 	if Input.is_physical_key_pressed(KEY_RIGHT):
-		w -= 0.6
+		w -= 1.0
 	drive_t += dt
 	if (v != 0.0 or w != 0.0) and drive_t > 0.05:
 		drive_t = 0.0
@@ -580,24 +686,33 @@ func _toggle_pause() -> void:
 func _process(dt: float) -> void:
 	_net()
 	_drive(dt)
+	_layout()
 	var y: float = orbit["yaw"]
 	var p: float = orbit["pitch"]
 	var dir := Vector3(cos(p) * cos(y), sin(p), -cos(p) * sin(y))
 	var tgt: Vector3 = orbit["target"]
 	main_cam.look_at_from_position(tgt + dir * float(orbit["dist"]), tgt, Vector3.UP)
 	var in_tun: bool = st.get("in_tunnel", false) and show["auto_roof"]
-	main_cam.cull_mask = (1 | 4) if in_tun else (1 | 2 | 4)
+	var mask := 1 | 4
+	if not in_tun:
+		mask |= (2 if show["tunnel"] else 0) | (8 if show["terrain"] else 0)
+	mask |= (16 if show["vehicles"] else 0) | (32 if show["robot"] else 0)
+	main_cam.cull_mask = mask
 	BeaconWorld.follow_weather(rain_main, main_cam)
 	for k in ["pandar", "tele"]:
 		pc_nodes[k].visible = show[k]
 	radar_pts.visible = show["radar"]
 	radar_boxes.visible = show["radar"]
 	radar_edges.visible = show["radar"]
+	fan_node.visible = show["radar_fov"] and world != null
 	gnss_mesh.visible = show["gnss"]
 	trail_mesh.visible = show["gnss"]
 	lane_mesh.visible = show["lanelet"]
-	lbl_acc.visible = show["labels"] and world != null
+	acc_mesh.visible = show["markers"]
+	lbl_acc.visible = show["labels"] and show["markers"] and world != null
 	lbl_beacon.visible = show["labels"] and world != null
+	scc_mesh.visible = show["scc"]
+	scc_lines.visible = show["scc"]
 	# 카메라 패널: 카메라 주기(실시간 기준)마다 한 번 렌더
 	cam_panel.visible = show["camera"] and sensor_sv != null and world != null
 	if cam_panel.visible and not cam_busy:
@@ -612,10 +727,28 @@ func _process(dt: float) -> void:
 		elif Time.get_ticks_msec() / 1000.0 > shot_at:
 			var path := shot_path
 			shot_path = ""
+			if args.has("shot-tab"):
+				sidebar.select_tab(int(args["shot-tab"]))
+			if args.has("shot-help"):
+				help_layer.visible = true
+			await get_tree().create_timer(0.5).timeout
 			await RenderingServer.frame_post_draw
 			get_viewport().get_texture().get_image().save_png(path)
 			_send({"type": "quit"})
 			get_tree().quit()
+
+## 사이드바 오른쪽 영역 기준으로 재생 바 가운데 정렬, 패널이 사이드바를 가리지 않게
+func _layout() -> void:
+	var vs := get_viewport().get_visible_rect().size
+	var sw: float = Sidebar.WIDTH
+	sidebar.position = Vector2.ZERO
+	sidebar.size = Vector2(sw, vs.y)
+	playbar.size = Vector2.ZERO
+	playbar.position = Vector2(maxf(sw + (vs.x - sw - playbar.size.x) / 2.0, sw + 8), 12)
+	dash_panel.size = Vector2(dash_panel.custom_minimum_size.x, 0)
+	dash_panel.position = Vector2(vs.x - dash_panel.size.x - 12, playbar.position.y + playbar.size.y + 12)
+	cam_panel.position = Vector2(maxf(vs.x - cam_panel.size.x - 12, sw + 12), vs.y - cam_panel.size.y - 12)
+	loading.position = Vector2(sw + (vs.x - sw - loading.size.x) / 2.0, vs.y / 2.0)
 
 # ================================================================== UI
 func _load_fonts(fonts: Dictionary, icons: String) -> void:
@@ -628,24 +761,19 @@ func _load_fonts(fonts: Dictionary, icons: String) -> void:
 	font_bold.load_dynamic_font(fonts["Bold"])
 	font_bold.fallbacks = [fa]
 	ui.theme.default_font = font_body
-	for l in [lbl_acc, lbl_beacon]:
+	for l in [lbl_acc, lbl_beacon] + veh_lbls:
 		l.font = font_bold
 	for k in dash:
 		if dash[k] is Label and dash[k].get_meta("big", false):
 			dash[k].add_theme_font_override("font", font_bold)
+	sidebar.set_fonts(font_bold)
+	_apply_bold(help_layer)
 
-func _ic(code: int) -> String:
-	return String.chr(code)
-
-func _panel_style(bg: Color, radius := 12, pad := 12) -> StyleBoxFlat:
-	var s := StyleBoxFlat.new()
-	s.bg_color = bg
-	s.set_corner_radius_all(radius)
-	s.content_margin_left = pad
-	s.content_margin_right = pad
-	s.content_margin_top = pad * 0.7
-	s.content_margin_bottom = pad * 0.7
-	return s
+func _apply_bold(n: Node) -> void:
+	for c in n.get_children():
+		if c is Label and c.get_meta("bold", false):
+			c.add_theme_font_override("font", font_bold)
+		_apply_bold(c)
 
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
@@ -654,192 +782,128 @@ func _build_ui() -> void:
 	ui.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(ui)
-	var th := Theme.new()
-	th.default_font_size = 15
-	th.set_color("font_color", "Label", TEXT)
-	th.set_color("font_color", "Button", TEXT)
-	th.set_stylebox("panel", "PanelContainer", _panel_style(BG0))
-	th.set_stylebox("normal", "Button", _panel_style(BG2, 8, 10))
-	th.set_stylebox("hover", "Button", _panel_style(BG3, 8, 10))
-	th.set_stylebox("pressed", "Button", _panel_style(Color(ACCENT, 0.85), 8, 10))
-	th.set_stylebox("focus", "Button", StyleBoxEmpty.new())
-	th.set_color("font_pressed_color", "Button", BG0)
-	ui.theme = th
+	ui.theme = K.make_theme()
+	sidebar = Sidebar.new()
+	sidebar.edited.connect(_on_edit)
+	sidebar.action.connect(_on_action)
+	ui.add_child(sidebar)
 	_build_playbar()
 	_build_dashboard()
-	_build_log()
 	_build_camera_panel()
-	loading = Label.new()
-	loading.text = "백엔드 연결 중..."
-	loading.add_theme_font_size_override("font_size", 22)
-	loading.add_theme_color_override("font_color", MUTED)
-	loading.set_anchors_preset(Control.PRESET_CENTER)
+	loading = K.label("백엔드 연결 중...", K.MUTED, 22)
 	ui.add_child(loading)
-
-func _btn(text: String, tip := "", toggle := false) -> Button:
-	var b := Button.new()
-	b.text = text
-	b.tooltip_text = tip
-	b.toggle_mode = toggle
-	b.focus_mode = Control.FOCUS_NONE
-	return b
-
-func _chip(text: String, col: Color) -> Label:
-	var l := Label.new()
-	l.text = text
-	l.add_theme_color_override("font_color", col)
-	var s := _panel_style(Color(col, 0.16), 999, 8)
-	s.content_margin_top = 3
-	s.content_margin_bottom = 3
-	l.add_theme_stylebox_override("normal", s)
-	return l
+	_build_help()
 
 func _build_playbar() -> void:
-	var pc := PanelContainer.new()
-	pc.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	pc.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	pc.position.y = 12
-	pc.add_theme_stylebox_override("panel", _panel_style(BG0, 14, 12))
-	ui.add_child(pc)
+	playbar = PanelContainer.new()
+	K.eat_mouse(playbar)
+	playbar.add_theme_stylebox_override("panel", K.panel_style(K.BG0, 14, 12))
+	ui.add_child(playbar)
 	var h := HBoxContainer.new()
 	h.add_theme_constant_override("separation", 6)
-	pc.add_child(h)
-	btn_pause = _btn(_ic(I_PAUSE), "재생 / 일시정지 (Space)")
-	btn_pause.add_theme_stylebox_override("normal", _panel_style(Color(ACCENT, 0.85), 8, 10))
-	btn_pause.add_theme_color_override("font_color", BG0)
+	playbar.add_child(h)
+	btn_pause = K.primary(K.btn(K.ic(K.I_PAUSE), "재생 / 일시정지 (Space)"))
 	btn_pause.pressed.connect(_toggle_pause)
 	h.add_child(btn_pause)
 	for r in [0.5, 1.0, 2.0, 4.0]:
-		var b := _btn("%sx" % (str(r) if r < 1 else str(int(r))), "시뮬레이션 배속", true)
+		var b := K.btn("%sx" % (str(r) if r < 1 else str(int(r))), "시뮬레이션 배속", true)
 		b.pressed.connect(func(): _send({"type": "rtf", "value": r}))
 		b.set_meta("rtf", r)
 		speed_btns.append(b)
 		h.add_child(b)
-	var b1 := _btn(_ic(I_ROTATE), "시나리오 재시작 (R)")
-	b1.pressed.connect(func(): _send({"type": "restart"}))
+	var b1 := K.btn(K.ic(K.I_ROTATE), "시나리오 재시작 (R)")
+	b1.pressed.connect(func(): _on_action("restart"))
 	h.add_child(b1)
-	var b2 := _btn(_ic(I_MAP), "맵 재생성 (G)")
-	b2.pressed.connect(func(): _send({"type": "restart", "map": true}))
+	var b2 := K.btn(K.ic(K.I_MAP), "맵 재생성 (G)")
+	b2.pressed.connect(func(): _on_action("regen_map"))
 	h.add_child(b2)
-	lbl_time = _chip("", TEXT)
-	lbl_env = _chip("", TEAL)
-	lbl_cmd = _chip("", MUTED)
-	lbl_ros = _chip("", MUTED)
+	lbl_time = K.chip("", K.TEXT)
+	lbl_env = K.chip("", K.TEAL)
+	lbl_cmd = K.chip("", K.MUTED)
+	lbl_cmd.tooltip_text = "비콘 이동 명령 출처: /cmd_vel(상위 제어기) 우선, 없으면 방향키"
+	lbl_cmd.mouse_filter = Control.MOUSE_FILTER_PASS
+	lbl_ros = K.chip("", K.MUTED)
 	for l in [lbl_time, lbl_env, lbl_cmd, lbl_ros]:
 		h.add_child(l)
-	var sep := VSeparator.new()
-	h.add_child(sep)
-	for it in [["pandar", I_DOT, "P40"], ["tele", I_BULLSEYE, "Tele"], ["radar", I_WIFI, "레이더"],
-			["gnss", I_SAT, "GNSS"], ["camera", I_CAMERA, ""]]:
+	h.add_child(VSeparator.new())
+	for it in [["pandar", K.I_DOT, "P40"], ["tele", K.I_BULLSEYE, "Tele"], ["radar", K.I_WIFI, "레이더"],
+			["gnss", K.I_SAT, "GNSS"], ["camera", K.I_CAMERA, ""]]:
 		var key: String = it[0]
-		var t := _btn(_ic(it[1]) + ("  " + it[2] if it[2] != "" else ""), "", true)
+		var t := K.btn(K.ic(it[1]) + ("  " + it[2] if it[2] != "" else ""), "", true)
 		t.button_pressed = show[key]
-		t.toggled.connect(func(on): show[key] = on)
+		t.toggled.connect(func(on): _on_edit("view." + key, on))
 		toggles[key] = t
 		h.add_child(t)
+	var hb := K.btn(K.ic(K.I_QUESTION), "조작 도움말 (F1)")
+	hb.pressed.connect(func(): help_layer.visible = true)
+	h.add_child(hb)
 
 func _kpi(parent: Control, key: String, label: String, col: Color) -> void:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 0)
 	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var a := Label.new()
-	a.text = label
-	a.add_theme_color_override("font_color", MUTED)
-	a.add_theme_font_size_override("font_size", 12)
-	var b := Label.new()
-	b.text = "-"
-	b.add_theme_color_override("font_color", col)
-	b.add_theme_font_size_override("font_size", 24)
+	var a := K.label(label, K.MUTED, 12)
+	var b := K.label("-", col, 24)
 	b.set_meta("big", true)
 	v.add_child(a)
 	v.add_child(b)
 	parent.add_child(v)
 	dash[key] = b
 
-func _section(parent: Control, icon: int, title: String, col: Color) -> void:
-	var l := Label.new()
-	l.text = _ic(icon) + "  " + title
-	l.add_theme_color_override("font_color", col)
-	l.add_theme_font_size_override("font_size", 14)
-	parent.add_child(l)
-
 func _build_dashboard() -> void:
-	var pc := PanelContainer.new()
-	pc.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	pc.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	pc.position = Vector2(-12, 68)
-	pc.custom_minimum_size = Vector2(290, 0)
-	ui.add_child(pc)
+	dash_panel = PanelContainer.new()
+	dash_panel.custom_minimum_size = Vector2(300, 0)
+	ui.add_child(dash_panel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 6)
-	pc.add_child(v)
-	_section(v, I_TOWER, "비콘", WARN)
+	dash_panel.add_child(v)
+	K.section(v, K.I_TOWER, "비콘", K.WARN)
 	var r1 := HBoxContainer.new()
 	v.add_child(r1)
-	_kpi(r1, "v", "속도", TEXT)
-	_kpi(r1, "acc", "사고 현장까지", AMBER)
-	var g := Label.new()
-	dash["gnss"] = g
-	v.add_child(g)
-	var dmg := Label.new()
-	dmg.add_theme_color_override("font_color", DANGER)
+	_kpi(r1, "v", "속도", K.TEXT)
+	_kpi(r1, "acc", "사고 현장까지", K.AMBER)
+	var dmg := K.chip("", K.DANGER)
 	dash["damage"] = dmg
 	v.add_child(dmg)
+	var g := K.chip("", K.OK)
+	dash["gnss"] = g
+	v.add_child(g)
 	v.add_child(HSeparator.new())
-	_section(v, I_CAR, "접근 차량", ACCENT)
+	K.section(v, K.I_CAR, "접근 차량", K.ACCENT)
 	var gr := GridContainer.new()
 	gr.columns = 3
 	v.add_child(gr)
-	for it in [["active", "주행", TEXT], ["noticed", "비콘 인지", WARN], ["lane_change", "차로변경", ACCENT],
-			["brake", "감속", TEAL], ["scc_lock", "SCC 인식", SCC], ["scc_follow", "SCC 추종", SCC]]:
+	for it in [["active", "주행", K.TEXT], ["noticed", "비콘 인지", K.WARN], ["lane_change", "차로변경", K.ACCENT],
+			["brake", "감속", K.TEAL], ["scc_lock", "SCC 인식", K.SCC], ["scc_follow", "SCC 추종", K.SCC]]:
 		_kpi(gr, it[0], it[1], it[2])
-	var cr := Label.new()
+	var cr := K.chip("", K.OK)
 	dash["crash"] = cr
 	v.add_child(cr)
+	legend_box = VBoxContainer.new()
+	legend_box.add_theme_constant_override("separation", 2)
+	v.add_child(legend_box)
+	legend_box.add_child(HSeparator.new())
+	legend_box.add_child(K.label(K.ic(K.I_INFO) + "  범례", K.MUTED, 13))
+	for it in [[K.TEAL, "SCC 작동 (접근 차량)"], [K.SCC, "SCC가 비콘 추종 (비콘까지 선)"], [K.WARN, "운전자가 비콘 인지"],
+			[K.DANGER, "추돌"], [Color(1, 0.3, 0.3), "레이더 감지 범위(면) · 클러스터"],
+			[K.AMBER, "레이더 감지 객체 (앞면 사각 판) · 사고 현장"], [Color(1, 0.62, 0.25), "Tele-15"],
+			[K.ACCENT, "Pandar40P (세기)"], [Color.WHITE, "GNSS 정답 궤적 / 측정(상태색)"]]:
+		var h := HBoxContainer.new()
+		h.add_child(K.label(K.ic(K.I_CIRCLE), it[0], 10))
+		h.add_child(K.label(it[1], K.TEXT, 12))
+		legend_box.add_child(h)
+	_ignore_mouse(dash_panel)
 
-func _build_log() -> void:
-	var pc := PanelContainer.new()
-	pc.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	pc.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	pc.position = Vector2(12, -12)
-	pc.custom_minimum_size = Vector2(460, 0)
-	ui.add_child(pc)
-	var v := VBoxContainer.new()
-	pc.add_child(v)
-	_section(v, I_INFO, "이벤트", MUTED)
-	log_box = VBoxContainer.new()
-	log_box.add_theme_constant_override("separation", 2)
-	v.add_child(log_box)
-
-func _add_log(line: String) -> void:
-	log_lines.append(line)
-	if log_lines.size() > 8:
-		log_lines = log_lines.slice(log_lines.size() - 8)
-	for c in log_box.get_children():
-		c.queue_free()
-	for ln in log_lines:
-		var l := Label.new()
-		l.text = ln
-		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		l.custom_minimum_size = Vector2(436, 0)
-		l.add_theme_font_size_override("font_size", 12)
-		var col := TEXT
-		if "추돌" in ln:
-			col = DANGER
-		elif "SCC" in ln:
-			col = SCC
-		elif "실패" in ln:
-			col = WARN
-		l.add_theme_color_override("font_color", col)
-		log_box.add_child(l)
+func _ignore_mouse(n: Node) -> void:
+	if n is Control:
+		(n as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for c in n.get_children():
+		_ignore_mouse(c)
 
 func _build_camera_panel() -> void:
 	cam_panel = PanelContainer.new()
-	cam_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	cam_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	cam_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	cam_panel.position = Vector2(-12, -12)
-	cam_panel.add_theme_stylebox_override("panel", _panel_style(Color(BG1, 0.95), 12, 10))
+	K.eat_mouse(cam_panel)
+	cam_panel.add_theme_stylebox_override("panel", K.panel_style(Color(K.BG1, 0.95), 12, 10))
 	ui.add_child(cam_panel)
 	var v := VBoxContainer.new()
 	v.name = "v"
@@ -847,16 +911,14 @@ func _build_camera_panel() -> void:
 	var h := HBoxContainer.new()
 	h.name = "h"
 	v.add_child(h)
-	h.add_child(_chip(_ic(I_CAMERA) + "  Arducam B0495", ACCENT))
-	h.add_child(_chip("Godot", TEAL))
-	var info := Label.new()
+	h.add_child(K.chip(K.ic(K.I_CAMERA) + "  Arducam B0495", K.ACCENT))
+	h.add_child(K.chip("Godot", K.TEAL))
+	var info := K.label("", K.MUTED, 12)
 	info.name = "info"
-	info.add_theme_color_override("font_color", MUTED)
-	info.add_theme_font_size_override("font_size", 12)
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	h.add_child(info)
-	var x := _btn(_ic(I_XMARK))
-	x.pressed.connect(func(): toggles["camera"].button_pressed = false)
+	var x := K.btn(K.ic(K.I_XMARK))
+	x.pressed.connect(func(): _on_edit("view.camera", false))
 	h.add_child(x)
 	var tr := TextureRect.new()
 	tr.name = "img"
@@ -865,31 +927,101 @@ func _build_camera_panel() -> void:
 	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	v.add_child(tr)
 
+func _build_help() -> void:
+	help_layer = Control.new()
+	help_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	help_layer.visible = false
+	ui.add_child(help_layer)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.45)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.gui_input.connect(func(e): if e is InputEventMouseButton and e.pressed: help_layer.visible = false)
+	help_layer.add_child(dim)
+	var cc := CenterContainer.new()
+	cc.set_anchors_preset(Control.PRESET_FULL_RECT)
+	cc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	help_layer.add_child(cc)
+	var pc := PanelContainer.new()
+	pc.add_theme_stylebox_override("panel", K.panel_style(K.BG1, 14, 20, K.BORDER))
+	pc.custom_minimum_size = Vector2(560, 0)
+	K.eat_mouse(pc)
+	cc.add_child(pc)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	pc.add_child(v)
+	var t := K.label(K.ic(K.I_QUESTION) + "  조작 도움말", K.TEXT, 20)
+	t.set_meta("bold", true)
+	v.add_child(t)
+	var gr := GridContainer.new()
+	gr.columns = 2
+	gr.add_theme_constant_override("h_separation", 16)
+	gr.add_theme_constant_override("v_separation", 6)
+	v.add_child(gr)
+	for it in [["↑ / ↓", "비콘 전진 / 후진 (ROS /cmd_vel이 오면 그쪽 우선)"], ["← / →", "비콘 회전"],
+			["좌클릭 드래그", "시점 회전"], ["우클릭 드래그", "시점 이동 (따라가기 해제)"], ["휠", "확대 / 축소"],
+			["F", "비콘 따라가기"], ["1  2  3", "비콘 / 전체 / 터널 시점"], ["Space", "일시정지 / 재생"],
+			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["F1", "도움말"]]:
+		var c := K.chip(it[0], K.ACCENT)
+		c.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		c.custom_minimum_size = Vector2(130, 0)
+		gr.add_child(c)
+		gr.add_child(K.label(it[1]))
+	v.add_child(K.label("주황 기둥 = 사고 현장,  비콘 위 짧은 선 = GNSS 위치 (색 = RTK 상태)", K.MUTED, 13))
+	var b := K.primary(K.btn("닫기"))
+	b.pressed.connect(func(): help_layer.visible = false)
+	v.add_child(b)
+
 func _update_ui() -> void:
 	var paused: bool = st.get("paused", false)
-	btn_pause.text = _ic(I_PLAY if paused else I_PAUSE)
+	btn_pause.text = K.ic(K.I_PLAY if paused else K.I_PAUSE)
 	for b in speed_btns:
 		b.set_pressed_no_signal(absf(float(b.get_meta("rtf")) - float(st.get("rtf", 1.0))) < 1e-3)
-	lbl_time.text = "%s  %.1f s · RTF %.2f" % [_ic(I_CLOCK), float(st["t"]), float(st["rtf_meas"])]
-	lbl_env.text = _ic(I_INFO) + "  " + str(world_msg.get("env_label", ""))
+	lbl_time.text = "%s  %.1f s · RTF %.2f" % [K.ic(K.I_CLOCK), float(st["t"]), float(st["rtf_meas"])]
+	lbl_env.text = K.ic(_env_icon()) + "  " + str(world_msg.get("env_label", ""))
 	var src: String = st["cmd_src"]
-	lbl_cmd.text = _ic(I_GAMEPAD) + "  명령 " + src
-	lbl_cmd.add_theme_color_override("font_color", OK if src != "-" else MUTED)
-	lbl_ros.text = _ic(I_LINK) + ("  ROS2" if st.get("ros", false) else "  ROS2 없음")
-	lbl_ros.add_theme_color_override("font_color", ACCENT if st.get("ros", false) else MUTED)
+	lbl_cmd.text = K.ic(K.I_GAMEPAD) + "  명령 " + src
+	K.set_chip_color(lbl_cmd, K.OK if src != "-" else K.MUTED)
+	var ros: bool = st.get("ros", false)
+	lbl_ros.text = K.ic(K.I_LINK) + ("  ROS2" if ros else "  ROS2 없음")
+	K.set_chip_color(lbl_ros, K.ACCENT if ros else K.MUTED)
 	dash["v"].text = "%+.1f m/s" % float(st["v"])
 	dash["acc"].text = "%.0f m" % float(st["acc_dist"])
 	var g = st.get("gnss")
+	dash["gnss"].visible = typeof(g) == TYPE_DICTIONARY
 	if typeof(g) == TYPE_DICTIONARY:
-		dash["gnss"].text = "%s  GNSS %s · σ %.2f m" % [_ic(I_SAT), g["name"], float(g["hacc"])]
-		dash["gnss"].add_theme_color_override("font_color", Color(g["color"][0], g["color"][1], g["color"][2]))
-	dash["damage"].text = "비콘 파손 — 명령 무시" if st.get("damaged", false) else (
-		("접촉: " + str(st["contact"])) if st.get("contact") != null else "")
+		dash["gnss"].text = "%s  GNSS %s · σ %.2f m" % [K.ic(K.I_SAT), g["name"], float(g["hacc"])]
+		var gc := {4: K.OK, 5: K.WARN, 1: K.AMBER, 0: K.DANGER}
+		K.set_chip_color(dash["gnss"], gc.get(int(g["status"]), K.MUTED))
+	if st.get("damaged", false):
+		dash["damage"].text = K.ic(K.I_BURST) + "  비콘 파손 — 명령 무시"
+		K.set_chip_color(dash["damage"], K.DANGER)
+		dash["damage"].visible = true
+	elif st.get("contact") != null:
+		dash["damage"].text = K.ic(K.I_HAND) + "  접촉: " + str(st["contact"])
+		K.set_chip_color(dash["damage"], K.WARN)
+		dash["damage"].visible = true
+	else:
+		dash["damage"].visible = false
 	var c: Dictionary = st["counts"]
 	dash["active"].text = str(int(st["n_active"]))
 	for k in ["noticed", "lane_change", "brake", "scc_lock"]:
 		dash[k].text = str(int(c.get(k, 0)))
 	dash["scc_follow"].text = str(int(st["scc_follow"]))
 	var crash := int(c.get("crash", 0))
-	dash["crash"].text = "%s  추돌 %d · 비콘 추돌 %d" % [_ic(I_BURST), crash, int(c.get("beacon_hit", 0))]
-	dash["crash"].add_theme_color_override("font_color", DANGER if crash else OK)
+	dash["crash"].text = "%s  추돌 %d  ·  비콘 추돌 %d" % [K.ic(K.I_BURST if crash else K.I_CHECK), crash,
+		int(c.get("beacon_hit", 0))]
+	K.set_chip_color(dash["crash"], K.DANGER if crash else K.OK)
+
+func _env_icon() -> int:
+	var e = world_msg.get("env", {})
+	if typeof(e) != TYPE_DICTIONARY:
+		return K.I_SUN
+	var wx: String = e.get("weather", "")
+	if wx == "rain":
+		return K.I_RAIN
+	if wx == "snow":
+		return K.I_SNOW
+	if wx == "fog":
+		return K.I_SMOG
+	var tod: String = e.get("time_of_day", "")
+	return {"night": K.I_MOON, "dusk": K.I_CLOUD_SUN}.get(tod, K.I_SUN)

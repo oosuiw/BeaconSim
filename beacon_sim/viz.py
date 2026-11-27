@@ -40,3 +40,26 @@ def intensity_colors(x, vmax=60.0):
     g = np.clip(1.6 * t, 0, 1)
     b = np.clip(1.0 - 1.2 * t, 0.15, 1)
     return np.stack([r, g, b, np.ones_like(t)], 1)
+
+
+def radar_fan(rc):
+    """ARS408 감지 범위 면 (센서 좌표): 근거리 ±60°/70m(45° 밖 40m) + 원거리 ±9°/250m → (삼각형 정점, 색, 모서리 선분)."""
+    nf, ff = rc['near'], rc['far']
+    tris, cols, edges = [], [], []
+
+    def fan(az0, az1, r_of, rgba, n):
+        az = np.radians(np.linspace(az0, az1, n))
+        r = np.array([r_of(a) for a in np.degrees(np.abs(az))])
+        arc = np.c_[r * np.cos(az), r * np.sin(az), np.zeros(n)]
+        for k in range(n - 1):
+            tris.extend([[0, 0, 0], arc[k], arc[k + 1]])
+            cols.extend([rgba] * 3)
+        outline = np.vstack([[0, 0, 0], arc, [0, 0, 0]])
+        for a, b in zip(outline[:-1], outline[1:]):
+            edges.extend([a, b])
+
+    fan(-nf['fov_deg'], nf['fov_deg'],
+        lambda a: nf['max_range'] if a <= nf['wide_fov_deg'] + 1e-6 else nf['wide_max_range'],
+        (1.0, 0.30, 0.30, 0.16), 121)
+    fan(-ff['fov_deg'], ff['fov_deg'], lambda a: ff['max_range'], (1.0, 0.30, 0.30, 0.12), 19)
+    return np.array(tris, 'f4'), np.array(cols, 'f4'), np.array(edges, 'f4')

@@ -26,17 +26,20 @@ from dataclasses import fields
 
 import numpy as np
 
-from . import __version__, scene
-from .common import (CACHE_DIR, ROOT, T_CAMLINK_OPTICAL, has_robot_model, load_yaml, sensor_mounts)
+from . import __version__, scene, ui_schema
+from .common import (CACHE_DIR, ROOT, T_CAMLINK_OPTICAL, apply_to_sim_config, has_robot_model, load_yaml,
+                     sensor_mounts)
 from .engine import EngineThread, SimEngine
 from .environment import EnvParams
 from .godot_link import C, CameraModel, export_scene, godot_bin, project_dir, to_g, xform_g
 from .roadgen import RoadParams, generate
 from .ros_link import RosLink
 from .traffic import B_CRASH, ScenarioParams, TrafficParams
-from .viz import GNSS_COLOR, LABEL_COLORS, intensity_colors, lanelet_overlay
+from .viz import GNSS_COLOR, LABEL_COLORS, intensity_colors, lanelet_overlay, radar_fan
 
-SETTINGS = os.path.join(os.path.expanduser('~'), '.config', 'beaconsim', 'app.json')
+CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.config', 'beaconsim')
+SETTINGS = os.path.join(CONFIG_DIR, 'app.json')                 # ImGui 앱과 공유 (생성 파라미터·저장 위치)
+GODOT_UI = os.path.join(CONFIG_DIR, 'godot_ui.json')            # Godot 앱 전용 (화면 표시·방향키)
 
 
 # ---------------------------------------------------------------- 프레이밍
@@ -81,6 +84,11 @@ class Backend:
         self.tparams = _pick(TrafficParams, c.get('traffic', {}))
         self.eparams = _pick(EnvParams, c.get('environment', {}))
         self.rand_map, self.rand_scn = False, True
+        self.export_dir = os.path.join(os.path.expanduser('~'), 'BeaconSim_maps')
+        self.export_pcd = True
+        self.key_speed, self.key_yaw = 1.5, 0.6
+        self.view = dict(ui_schema.VIEW_DEFAULT)
+        self.export_future = None
         self._load_settings()
         if self.params.seed < 0:
             self.params.seed = 1
@@ -101,12 +109,24 @@ class Backend:
             with open(SETTINGS) as f:
                 d = json.load(f)
         except Exception:     # noqa: BLE001
-            return
+            d = {}
         for key, cls, attr in [('params', RoadParams, 'params'), ('scenario', ScenarioParams, 'sparams'),
                                ('traffic', TrafficParams, 'tparams'), ('env', EnvParams, 'eparams')]:
             if key in d:
                 setattr(self, attr, _pick(cls, d[key]))
         self.rand_map, self.rand_scn = d.get('rand_map', False), d.get('rand_scn', True)
+        self.export_dir = d.get('export_dir', self.export_dir)
+        try:
+            with open(GODOT_UI) as f:
+                g = json.load(f)
+        except Exception:     # noqa: BLE001
+            return
+        self.key_speed = float(g.get('key_speed', self.key_speed))
+        self.key_yaw = float(g.get('key_yaw', self.key_yaw))
+        self.export_pcd = bool(g.get('export_pcd', self.export_pcd))
+        for k, v in g.get('view', {}).items():
+            if k in self.view:
+                self.view[k] = v
 
     def save_settings(self):
         try:
@@ -115,10 +135,55 @@ class Backend:
         except Exception:     # noqa: BLE001
             d = {}
         d.update(params=self.params.to_dict(), scenario=self.sparams.to_dict(), traffic=self.tparams.to_dict(),
-                 env=self.eparams.to_dict(), rand_map=self.rand_map, rand_scn=self.rand_scn)
+                 env=self.eparams.to_dict(), rand_map=self.rand_map, rand_scn=self.rand_scn, export_dir=self.export_dir)
         os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
         with open(SETTINGS, 'w') as f:
             json.dump(d, f, indent=1)
+        with open(GODOT_UI, 'w') as f:
+            json.dump({'key_speed': self.key_speed, 'key_yaw': self.key_yaw, 'export_pcd': self.export_pcd,
+                       'view': self.view}, f, indent=1)
+
+    # ---- 저장 (Autoware 맵 세트) / sim.yaml 적용
+    def export_busy(self):
+        return self.export_future is not None and not self.export_future.done()
+
+    def export_async(self):
+        if self.export_busy() or self.model is None or self.engine is None:
+            return
+        p = self.model.params
+        out = os.path.join(self.export_dir, f'hwy_s{p.seed}_{int(p.length)}m_{p.lanes}L_{p.design_speed}kph')
+        self.save_settings()
+        self.log(f'저장 시작 → {out}')
+        self.export_future = self.pool.submit(self._export_job, out, self.model, self.parts, self.engine)
+
+    def _export_job(self, out, model, parts, eng):
+        import yaml
+        from .export import export_all
+        try:
+            meta = export_all(model, out, self.log, self.export_pcd, parts)
+            with open(os.path.join(out, 'scenario.yaml'), 'w') as f:
+                yaml.safe_dump({'map': model.params.to_dict(), 'scenario': eng.scn.sp.to_dict(),
+                                'traffic': self.tparams.to_dict(), 'environment': self.eparams.to_dict(),
+                                'resolved_environment': eng.env.to_dict(), 'scenario_summary': eng.scn.summary()},
+                               f, allow_unicode=True, sort_keys=False)
+            self.log('scenario.yaml 저장 (맵·시나리오·교통·환경)')
+            return meta
+        except Exception as e:      # noqa: BLE001
+            self.log(f'저장 실패: {e}')
+            raise
+
+    def apply_sim_yaml(self):
+        try:
+            keys = ['seed', 'length', 'lanes', 'design_speed', 'tunnels', 'gantries', 'wear', 'wear_faded',
+                    'wear_broken', 'wear_sparse', 'tunnel_len_min', 'tunnel_len_max', 'dash_len', 'dash_gap',
+                    'region_lat', 'region_lon']
+            d = self.params.to_dict()
+            scn = self.engine.scn.sp.to_dict() if self.engine is not None else self.sparams.to_dict()
+            path = apply_to_sim_config({'map': {k: d[k] for k in keys}, 'scenario': scn,
+                                        'traffic': self.tparams.to_dict(), 'environment': self.eparams.to_dict()})
+            self.log(f'적용: {path}')
+        except Exception as e:      # noqa: BLE001
+            self.log(f'적용 실패: {e}')
 
     def log(self, msg):
         with self.log_lock:
@@ -222,6 +287,8 @@ class Server:
         self.sent_log = 0
         self.last_pc_t = {}
         self.cam_seq, self.cam_next_t, self.cam_pending = 0, 0.0, None
+        self.settings_dirty = 0.0
+        self.export_was_busy = False
         shm = '/dev/shm' if os.path.isdir('/dev/shm') else CACHE_DIR
         self.cam_path = os.path.join(shm, f'beaconsim_view_{os.getpid()}.rgb')
         cmd = [godot_bin(), '--path', project_dir(), '--resolution', f'{window[0]}x{window[1]}', '--',
@@ -269,7 +336,23 @@ class Server:
         elif t == 'restart':
             be.rebuild(map_too=bool(m.get('map', False)))
         elif t == 'drive' and be.engine is not None:
-            be.engine.set_cmd('key', float(m['v']), float(m['w']))
+            be.engine.set_cmd('key', float(m['v']) * be.key_speed, float(m['w']) * be.key_yaw)
+        elif t == 'set':
+            if ui_schema.set_value(be, m['k'], m['v']):
+                self.send({'type': 'ui', 'tabs': ui_schema.tabs(be)})
+            self.settings_dirty = time.time()
+            self.send_values()
+        elif t == 'action':
+            a = m.get('name')
+            if a == 'restart':
+                be.rebuild()
+            elif a == 'regen_map':
+                be.rebuild(map_too=True)
+            elif a == 'export':
+                be.export_async()
+            elif a == 'apply_sim_yaml':
+                be.apply_sim_yaml()
+            self.send_values()
         elif t == 'cam_done':
             self._on_cam_done(m)
 
@@ -286,10 +369,18 @@ class Server:
             arrays['lane_pts'] = (to_g(lane[0], origin)).astype('f4')
             arrays['lane_cols'] = lane[1].astype('f4')
         specs = be.engine.traffic.specs
-        self.send({'type': 'world', 'seq': be.world_seq, 'scene': js, 'bounds': [np.minimum(lo, hi).tolist(),
+        if 'ars408' in be.engine.mounts:                       # 레이더 감지 범위 면 (비콘 기준 고정 모양)
+            tri, col, edge = radar_fan(be.base_cfg['ars408'])
+            z = np.zeros(3)
+            arrays.update(fan_tri=to_g(tri, z).astype('f4'), fan_col=col, fan_edge=to_g(edge, z).astype('f4'))
+            radar_T = xform_g(be.engine.mounts['ars408'][1], z)
+        else:
+            radar_T = None
+        self.send({'type': 'world', 'radar_T': radar_T, 'seq': be.world_seq, 'scene': js, 'bounds': [np.minimum(lo, hi).tolist(),
                    np.maximum(lo, hi).tolist()], 'accident': acc.tolist(), 'tunnels': tun,
                    'veh_dims': [[sp.length, sp.width, sp.height] for sp in specs],
-                   'env_label': be.engine.env.label(), 'map': m.summary(), 'scenario': scn.summary()}, arrays)
+                   'env_label': be.engine.env.label(),
+                   'env': {'time_of_day': be.engine.env.time_of_day, 'weather': be.engine.env.weather}, 'map': m.summary(), 'scenario': scn.summary()}, arrays)
 
     def send_state(self):
         be = self.be
@@ -319,7 +410,8 @@ class Server:
                'robot': xform_g(T_wb, o), 'cam': xform_g(T_wb @ be.T_b_opt, o, cam=True), 'gnss': gj,
                'ros': bool(be.ros is not None and be.ros.ok)}
         self.send(msg, {'veh_idx': act.astype('<i4'), 'veh_T': xforms_g(snap['traffic_T'][act], o),
-                        'veh_flags': flags.astype(np.uint8)})
+                        'veh_flags': flags.astype(np.uint8),
+                        'veh_kmh': (np.linalg.norm(snap['traffic_vel'][act], axis=1) * 3.6).astype('f4')})
         for ev in snap['events']:
             if ev[1] in ('crash', 'scc_lock', 'beacon_contact', 'beacon_damaged'):
                 be.log(f'[{ev[0]:.1f}s] 차량 #{ev[2] if ev[2] >= 0 else "-"} {ev[3]}')
@@ -398,6 +490,9 @@ class Server:
         img = self.be.cam.distort(raw.reshape(h, w, 3))
         self.be.ros.publish_camera(img, t, self.be.cam, self.be.base_cfg['camera']['optical_frame'])
 
+    def send_values(self):
+        self.send({'type': 'values', 'values': ui_schema.values(self.be)})
+
     def send_logs(self):
         with self.be.log_lock:
             lines = list(self.be.log_lines)
@@ -426,6 +521,8 @@ class Server:
                               'wr': self.be.cam.Wr, 'hr': self.be.cam.Hr,
                               'vfov': float(np.degrees(2 * np.arctan(self.be.cam.Hr / 2.0 / self.be.cam.K[1, 1]))),
                               'rate_hz': self.be.base_cfg['camera']['rate_hz']}})
+        self.send({'type': 'ui', 'tabs': ui_schema.tabs(self.be)})
+        self.send_values()
         self.be.rebuild(map_too=True)
         period = 1.0 / self.STATE_HZ
         nxt = time.perf_counter()
@@ -435,6 +532,15 @@ class Server:
             if w is not None:
                 self.last_pc_t = {}
                 self.send_world(*w)
+                self.send({'type': 'info', 'info': ui_schema.info(self.be)})
+                self.send_values()                              # 랜덤 시드가 바뀌었을 수 있음
+            if self.settings_dirty and time.time() - self.settings_dirty > 0.5:
+                self.settings_dirty = 0.0
+                self.be.save_settings()
+            busy = self.be.export_busy()
+            if busy != self.export_was_busy:
+                self.export_was_busy = busy
+                self.send_values()
             if self.be.engine is not None and self.be.build_future is None:
                 self.send_state()
             self.send_logs()
@@ -445,6 +551,8 @@ class Server:
 
     def close(self):
         self.running = False
+        if self.settings_dirty:
+            self.be.save_settings()
         try:
             if self.conn is not None:
                 self.conn.sendall(pack({'type': 'bye'}))
@@ -472,6 +580,9 @@ def main():
     ap.add_argument('--set', action='append', default=[], help='예: env.weather=rain')
     ap.add_argument('--shot', default=None, help='테스트용: 장면 로드 후 --shot-delay 초 뒤 화면 저장하고 종료')
     ap.add_argument('--shot-delay', type=float, default=8.0)
+    ap.add_argument('--shot-tab', type=int, default=None, help='테스트용: 캡처 전에 고를 사이드바 탭 번호 (0~5)')
+    ap.add_argument('--shot-help', action='store_true', help='테스트용: 도움말 창을 연 상태로 캡처')
+    ap.add_argument('--selftest', default=None, help='테스트용: UI 자체 시험 (입력 주입) 후 결과 화면을 이 폴더에 저장하고 종료')
     a = ap.parse_args()
     be = Backend(ros=not a.no_ros)
     if be.robot_cfg is None:
@@ -486,6 +597,12 @@ def main():
             be.rand_scn = False
     w, h = (int(x) for x in a.size.lower().split('x'))
     extra = [f'--shot={os.path.abspath(a.shot)}', f'--shot-delay={a.shot_delay}'] if a.shot else []
+    if a.shot and a.shot_tab is not None:
+        extra.append(f'--shot-tab={a.shot_tab}')
+    if a.shot and a.shot_help:
+        extra.append('--shot-help')
+    if a.selftest:
+        extra.append(f'--selftest={os.path.abspath(a.selftest)}')
     srv = Server(be, (w, h), extra)
 
     def stop(*_):

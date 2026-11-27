@@ -141,9 +141,13 @@ func _load_scene(path: String) -> void:
 				base = (sm as BaseMaterial3D).albedo_color
 			mi.material_override = _mat(cls, base, wet)
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cls != "terrain" else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			if cls in ["tunnel", "terrain"]:      # 레이어 2: 메인 뷰에서 터널 안일 때 숨김 (센서 카메라는 항상 봄)
+			if cls == "tunnel":                   # 레이어: 1 도로 등, 2 터널, 4 지형, 5 차량, 6 비콘 (메인 뷰에서 켜고 끔)
 				mi.layers = 2
+			elif cls == "terrain":
+				mi.layers = 8
 	robot = root.find_child("robot", false, false)
+	if robot:
+		set_layers(robot, 32)
 	for i in range(info["protos"].size()):
 		var p: Node3D = root.find_child("proto_%d" % i, false, false)
 		p.visible = false
@@ -155,6 +159,12 @@ func _load_scene(path: String) -> void:
 	for a in info["accident"]:
 		var v := _make_vehicle(int(a["proto"]), a["color"], true)
 		v.transform = xf(a["T"])
+
+static func set_layers(n: Node, layer: int) -> void:
+	if n is VisualInstance3D and not (n is Light3D):
+		(n as VisualInstance3D).layers = layer
+	for c in n.get_children():
+		set_layers(c, layer)
 
 func _make_vehicle(pi: int, col: Array, hazard := false) -> Node3D:
 	var v: Node3D = protos[pi].duplicate()
@@ -189,6 +199,7 @@ func _make_vehicle(pi: int, col: Array, hazard := false) -> Node3D:
 		slot_lights.append(sl)
 	else:
 		acc_lights.append(sl)
+	set_layers(v, 16)
 	return v
 
 func _lamp_mat(head: bool, hazard: bool) -> StandardMaterial3D:

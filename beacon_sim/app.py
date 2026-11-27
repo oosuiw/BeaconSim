@@ -17,7 +17,6 @@ import collections
 import copy
 import json
 import os
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +28,7 @@ import numpy as np
 from imgui_bundle import imgui
 
 from . import scene
-from .common import (ROOT, T_CAMLINK_OPTICAL, has_robot_model, load_robot_parts, load_yaml, resource,
+from .common import (apply_to_sim_config, ROOT, T_CAMLINK_OPTICAL, has_robot_model, load_robot_parts, load_yaml,
                      sensor_mounts, writable_root)
 from .engine import EngineThread, SimEngine
 from .environment import TIME_KO, WEATHER_KO, EnvParams
@@ -56,7 +55,7 @@ FONT_CANDIDATES = [
     '/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf',
     ('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', 1),
 ]
-from .viz import (CRASHED, GNSS_COLOR, LABEL_COLORS, NOTICED, SCC_BEACON, SCC_ON,  # noqa: E402,F401
+from .viz import (radar_fan, CRASHED, GNSS_COLOR, LABEL_COLORS, NOTICED, SCC_BEACON, SCC_ON,  # noqa: E402,F401
                   intensity_colors, lanelet_overlay)
 
 
@@ -81,22 +80,6 @@ def look_at(eye, target, up=(0, 0, 1)):
     return V
 
 
-def apply_to_sim_config(blocks, path=None):
-    """config/sim.yaml 의 블록(map/scenario/traffic/environment)을 교체 (주석·다른 설정 유지).
-    저장소에서 실행하면 저장소 파일, AppImage면 ~/.config/beaconsim/config/sim.yaml."""
-    path = path or os.path.join(writable_root(), 'config', 'sim.yaml')
-    src = path if os.path.exists(path) else resource(os.path.join('config', 'sim.yaml'))
-    with open(src) as f:
-        text = f.read()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    for name, vals in blocks.items():
-        block = f'{name}:\n' + ''.join(f'  {k}: {v}\n' for k, v in vals.items())
-        text, n = re.subn(rf'^{name}:\n(?:[ \t]+.*\n)*', block, text, count=1, flags=re.M)
-        if n == 0:
-            text += '\n' + block
-    with open(path, 'w') as f:
-        f.write(text)
-    return path
 
 
 class App(StartMixin):
@@ -1086,29 +1069,9 @@ class App(StartMixin):
                     put(top, f'SCC 추종 {v:.0f} km/h', S.SCC)
 
     def _radar_fan_local(self):
-        """ARS408 감지 범위 면 (센서 좌표, 한 번만 생성): 근거리 ±60°/70m(45° 밖 40m) + 원거리 ±9°/250m."""
-        if getattr(self, '_fan_local', None) is not None:
-            return self._fan_local
-        rc = self.base_cfg['ars408']
-        nf, ff = rc['near'], rc['far']
-        tris, cols, edges = [], [], []
-
-        def fan(az0, az1, r_of, rgba, n):
-            az = np.radians(np.linspace(az0, az1, n))
-            r = np.array([r_of(a) for a in np.degrees(np.abs(az))])
-            arc = np.c_[r * np.cos(az), r * np.sin(az), np.zeros(n)]
-            for k in range(n - 1):
-                tris.extend([[0, 0, 0], arc[k], arc[k + 1]])
-                cols.extend([rgba] * 3)
-            outline = np.vstack([[0, 0, 0], arc, [0, 0, 0]])
-            for a, b in zip(outline[:-1], outline[1:]):
-                edges.extend([a, b])
-
-        fan(-nf['fov_deg'], nf['fov_deg'],
-            lambda a: nf['max_range'] if a <= nf['wide_fov_deg'] + 1e-6 else nf['wide_max_range'],
-            (1.0, 0.30, 0.30, 0.16), 121)
-        fan(-ff['fov_deg'], ff['fov_deg'], lambda a: ff['max_range'], (1.0, 0.30, 0.30, 0.12), 19)
-        self._fan_local = (np.array(tris, 'f4'), np.array(cols, 'f4'), np.array(edges, 'f4'))
+        """ARS408 감지 범위 면 (센서 좌표, 한 번만 생성)."""
+        if getattr(self, '_fan_local', None) is None:
+            self._fan_local = radar_fan(self.base_cfg['ars408'])
         return self._fan_local
 
     def _camera_window(self, W, H):

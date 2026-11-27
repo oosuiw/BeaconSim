@@ -199,5 +199,10 @@ Copyright (c) 2026 BeaconSim authors. All rights reserved. (LICENSE 참고)
 - 1단계(완료): 3D 월드 고품질 렌더, 마우스 시점(좌 회전·우 이동·휠 확대, F 따라가기, 1/2/3 시점), 방향키 비콘 주행,
   Space/R/G, Pandar·Tele·레이더(클러스터·앞면 판)·GNSS·SCC 표시, 재생 바·상황판·이벤트·카메라 패널,
   ROS 카메라 토픽(Godot 렌더 → 렌즈 왜곡 → 발행)
-- 다음: 2단계 사이드바(맵·시나리오·교통·환경·보기·저장), 3단계 시작 화면·시험·회귀, 4단계 AppImage 전환
+- 2단계(완료): 사이드바 탭(맵·시나리오·교통·환경·보기·저장)과 이벤트 피드(전체/차량), 도움말(F1), 상황판 범례,
+  레이더 감지 범위 면, 차량 이름표(추돌·SCC 추종 속도), Pandar 정답 라벨 색, Lanelet 선, 지형·터널·차량·비콘 표시 켜고 끄기, UI 배율.
+  탭 항목은 파이썬(`beacon_sim/ui_schema.py`)이 정의하고 Godot(`godot/sidebar.gd`)이 그린다 → 항목 추가는 파이썬만 고치면 된다.
+  생성 조건·저장 위치는 기존 앱과 같은 `~/.config/beaconsim/app.json`, 화면 표시·방향키 설정은 `godot_ui.json`
+- UI 자체 시험: `./run_godot.sh --no-ros --selftest results/ui_selftest` (가상 마우스·키 입력으로 탭·체크박스·슬라이더·단축키를 눌러 보고 화면 저장)
+- 다음: 3단계 시작 화면·시험·회귀, 4단계 AppImage 전환
 - 그동안 기존 GUI(`run_app.sh`)는 그대로 사용 가능
