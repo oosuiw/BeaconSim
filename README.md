@@ -46,6 +46,15 @@ python3 -m venv --system-site-packages .venv          # ROS2 rclpy를 쓰려면 
 python3 tools/build_robot.py        # → robot/meshes/*, config/robot.yaml (센서 장착 포즈)
 ```
 
+접이식 비콘(BeaconV6~, STEP 펴짐·접힘 두 파일):
+```bash
+.venv/bin/pip install cadquery-ocp      # STEP 읽기 (OpenCascade), 모델 만들 때만 필요
+.venv/bin/python tools/build_robot.py --step-up "BeaconV6/비콘 최종 (업).stp" --step-down "BeaconV6/비콘 최종 (다운).stp" --force
+```
+- 두 파일에서 움직이는 부품을 찾아 마스트 관절(`mast_joint`, 0 = 접힘)과 센서 위치(`mast_link` 기준)를 `config/robot.yaml` 에 쓴다
+- 비콘은 접힌 채로 시작한다. 재생 바 "펴기" 버튼 / **U** 키, 상위 제어기는 `/beacon/deploy` (std_msgs/Bool).
+  관절 상태 `/joint_states`, TF `base_link → mast_link → 센서`. 시나리오 탭에서 자동 펴기(회귀 시험용)를 켤 수 있다
+
 ## 실행
 
 ```bash

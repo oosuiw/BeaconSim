@@ -18,3 +18,10 @@ config/robot.yaml
 # 제3자 자료 (각자 내려받기 — README '설치' 참고)
 third_party/
 build/
+
+# 비콘 CAD·사진 (팀 내부 자료, 공개 금지)
+BeaconV*/
+*.stp
+*.STP
+*.step
+robot_backup_*/

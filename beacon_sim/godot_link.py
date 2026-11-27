@@ -16,7 +16,7 @@ import time
 import numpy as np
 
 from . import scene
-from .common import ROBOT_PART_COLORS, ROOT, T_CAMLINK_OPTICAL, load_robot_parts, sensor_mounts
+from .common import ROOT, T_CAMLINK_OPTICAL, sensor_mounts
 
 C = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], float)     # map → godot 기저
 D_CAM = np.diag([1.0, -1.0, -1.0])                           # Godot 카메라 로컬 → 광학 프레임
@@ -161,13 +161,20 @@ def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy, static_path=None, static_id=
                 n0 += len(p.v)
             mi = g.mesh(cls, np.concatenate(vs), np.concatenate(fs), cls, ps[0].color, smooth=cls in SMOOTH)
             roots.append(g.node(f'static_{cls}', mi))
-        # 비콘 부품 (base_link 기준, 카메라 하우징 제외)
-        rk = []
-        for name, (v, f) in load_robot_parts().items():
-            if name == 'camera':
+        # 비콘 부품: 링크별 노드 (robot / link_mast / link_crank ...), 상태 메시지의 링크 변환으로 접히고 펴진다
+        from .robot_model import load_robot_links
+        parts, _, meta = load_robot_links()
+        rk, by_link = [], {}
+        for name, link, v, f, col in parts:
+            if name == 'camera' and not meta:          # 예전 모델: 카메라 하우징이 자기 시야를 가림
                 continue
-            rk.append(g.node(f'robot_{name}', g.mesh(f'robot_{name}', np.asarray(v) @ C.T, f, f'robot_{name}',
-                                                     ROBOT_PART_COLORS.get(name, (0.6, 0.6, 0.6)))))
+            node = g.node(f'robot_{name}', g.mesh(f'robot_{name}', np.asarray(v) @ C.T, f, f'robot_{name}', col))
+            if link == 'base':
+                rk.append(node)
+            else:
+                by_link.setdefault(link, []).append(node)
+        for link, nodes in by_link.items():
+            rk.append(g.node(f'link_{link}', None, nodes))
         roots.append(g.node('robot', None, rk))
         tmp = static_path + '.tmp'
         g.write(tmp, roots)
@@ -283,8 +290,8 @@ class GodotLink:
     hidden=True: GUI 연동용 (창 최소화). request()/poll() 은 기다리지 않는 스트리밍 캡처 (공유 메모리 원시 RGB).
     """
 
-    def __init__(self, scene_json, origin, T_b_opt, port=None, window=(1280, 820), hidden=False, log=print):
-        self.origin, self.T_b_opt, self.log = origin, T_b_opt, log
+    def __init__(self, scene_json, origin, T_b_opt, port=None, window=(1280, 820), hidden=False, log=print, kin=None):
+        self.origin, self.T_b_opt, self.log, self.kin = origin, T_b_opt, log, kin
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rx.bind(('127.0.0.1', 0))
         port = port or _free_port()
@@ -317,12 +324,16 @@ class GodotLink:
                 return msg
         raise TimeoutError(f'Godot 응답 없음 ({what})')
 
-    def _state(self, eng_t, T_wb, traffic_T, active):
+    def _state(self, eng_t, T_wb, traffic_T, active, mast_q=None):
         self.seq += 1
         veh = [[int(i)] + xform_g(traffic_T[i], self.origin) for i in np.nonzero(active)[0]]
+        T_b_opt, links = self.T_b_opt, {}
+        if self.kin is not None and mast_q is not None:      # 접이식 마스트: 카메라·부품이 각도를 따라감
+            T_b_opt = self.kin.mount('camera', mast_q)[1] @ T_CAMLINK_OPTICAL
+            links = robot_links_g(self.kin, mast_q)
         return {'type': 'state', 'seq': self.seq, 't': round(float(eng_t), 3),
-                'cam': xform_g(T_wb @ self.T_b_opt, self.origin, cam=True),
-                'robot': xform_g(T_wb, self.origin), 'veh': veh}
+                'cam': xform_g(T_wb @ T_b_opt, self.origin, cam=True),
+                'robot': xform_g(T_wb, self.origin), 'links': links, 'veh': veh}
 
     def _send(self, msg):
         data = json.dumps(msg, separators=(',', ':')).encode()
@@ -332,7 +343,7 @@ class GodotLink:
 
     def send_state(self, eng, T_wb, traffic_T, active, capture=None):
         """비교 도구용: capture 경로가 있으면 PNG 저장까지 기다린다."""
-        msg = self._state(eng.t, T_wb, traffic_T, active)
+        msg = self._state(eng.t, T_wb, traffic_T, active, getattr(eng, 'mast_q', None))
         if capture:
             msg['capture'] = capture
         self._send(msg)
@@ -340,11 +351,11 @@ class GodotLink:
             return self._wait('captured', 30)
 
     # ---- 스트리밍 (GUI·ROS 카메라)
-    def request(self, t, T_wb, traffic_T, active, settle=2):
+    def request(self, t, T_wb, traffic_T, active, settle=2, mast_q=None):
         """캡처 요청 (응답을 기다리지 않음). 이전 요청이 아직이면 False."""
         if self.pending is not None and time.time() - self.pending[1] < 2.0:
             return False
-        msg = self._state(t, T_wb, traffic_T, active)
+        msg = self._state(t, T_wb, traffic_T, active, mast_q)
         msg.update(capture=self.raw_path, raw=True, settle=settle)
         self._send(msg)
         self.pending = (self.seq, time.time(), t)
@@ -386,6 +397,14 @@ class GodotLink:
             os.remove(self.raw_path)
         except OSError:
             pass
+
+
+def robot_links_g(kin, q):
+    """움직이는 링크(마스트·크랭크 …) → Godot 로컬 변환 (비콘 기준, 12개 실수)"""
+    if not kin.has_mast:
+        return {}
+    z = np.zeros(3)
+    return {name: xform_g(kin.link_T(name, q), z) for name in ['mast'] + list(kin.links)}
 
 
 def camera_T_b_opt(robot_cfg):

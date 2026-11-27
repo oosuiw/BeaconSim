@@ -407,7 +407,7 @@ class App(StartMixin):
                         shutil.rmtree(os.path.join(root, d), ignore_errors=True)   # 끝난 프로세스 것만
             out = os.path.join(root, str(os.getpid()))
             _, js, origin = godot_link.export_scene(eng, out, self.base_cfg['camera'], cam.Wr, cam.Hr, cam.K[1, 1])
-            return eng, godot_link.GodotLink(js, origin, self.T_b_opt, hidden=True, log=self.log)
+            return eng, godot_link.GodotLink(js, origin, self.T_b_opt, hidden=True, log=self.log, kin=eng.kin)
         self.log('Godot 카메라 렌더러 준비 중...')
         self.godot_future = self.pool.submit(job)
 
@@ -1135,7 +1135,8 @@ class App(StartMixin):
         self.cam_next_t = snap['t'] + 1.0 / self.base_cfg['camera']['rate_hz']
         T_wb = snap['T_wb']
         veh = list(self.engine.accident) + list(zip(self.engine.traffic.specs, snap['traffic_T']))
-        img = self.camera.render(self.cam_scene, T_wb @ self.T_b_opt, T_wb, veh, self.engine.env)
+        T_b_opt = self.engine.kin.mount('camera', snap.get('mast_q', 0.0))[1] @ T_CAMLINK_OPTICAL   # 마스트를 따라감
+        img = self.camera.render(self.cam_scene, T_wb @ T_b_opt, T_wb, veh, self.engine.env)
         self._deliver_camera(img, snap['t'])
 
     def _update_camera_godot(self, snap):
@@ -1150,7 +1151,7 @@ class App(StartMixin):
                 self._deliver_camera(img, t)
         need_ros = self.ros is not None and self.ros.ok
         if (self.show['camera'] or need_ros) and snap['t'] >= self.cam_next_t:
-            if g.request(snap['t'], snap['T_wb'], snap['traffic_T'], snap['active']):
+            if g.request(snap['t'], snap['T_wb'], snap['traffic_T'], snap['active'], mast_q=snap.get('mast_q')):
                 self.cam_next_t = snap['t'] + 1.0 / self.base_cfg['camera']['rate_hz']
 
     def _deliver_camera(self, img, t):

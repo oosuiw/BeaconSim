@@ -14,15 +14,15 @@ from nav_msgs.msg import Odometry
 from radar_msgs.msg import RadarReturn, RadarScan, RadarTrack, RadarTracks
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import NavSatFix, NavSatStatus, PointCloud2, PointField
-from std_msgs.msg import ColorRGBA, Header, String
+from sensor_msgs.msg import JointState, NavSatFix, NavSatStatus, PointCloud2, PointField
+from std_msgs.msg import Bool, ColorRGBA, Header, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 from unique_identifier_msgs.msg import UUID
 from visualization_msgs.msg import Marker, MarkerArray
 
 import numpy as _np
 
-from .common import T_CAMLINK_OPTICAL, R_to_quat, make_T, quats_from_R, sensor_mounts
+from .common import T_CAMLINK_OPTICAL, R_to_quat, make_T, quats_from_R
 from .gnss import FIX, FLOAT, NONE, SINGLE
 
 T0_NS = 1_000_000_000          # /clock 시작 오프셋 (0은 '미설정'으로 취급되는 노드가 있어 피함)
@@ -118,24 +118,34 @@ class RosBridge:
         self.stfb = StaticTransformBroadcaster(node) if static_tf else None
         node.create_subscription(Twist, sc['cmd_vel_topic'],
                                  lambda m: self.e.set_cmd('ros', m.linear.x, m.angular.z), 10)
+        # 접이식 마스트: 펴기/접기 명령, 관절 상태
+        node.create_subscription(Bool, sc.get('deploy_topic', '/beacon/deploy'),
+                                 lambda m: self.e.set_mast(bool(m.data), 'ros'), 10)
+        self.pub['joint_states'] = cp(JointState, sc.get('joint_states_topic', '/joint_states'), 10)
+        self.joint_every = max(1, int(round(0.02 / engine.DT)))          # 50 Hz
         cam_hz = cfg['camera']['rate_hz']
         self.traffic_every = max(1, int(round(1.0 / cam_hz / engine.DT)))
         self.marker_every = max(1, int(round(0.1 / engine.DT)))
         self.publish_static()
 
     def publish_static_tf(self):
-        """base_link → 센서 프레임 (robot.yaml), camera_link → camera_optical_link, base_link → gnss_link."""
+        """base_link(또는 mast_link) → 센서 프레임 (robot.yaml), camera_link → camera_optical_link, gnss_link.
+        base_link → mast_link 는 움직이므로 매 스텝 /tf 로 (on_step)."""
         if self.stfb is None:
             return
         stamp = t_to_msg(self.e.t)
         tfs = []
-        for name, (frame, T) in sensor_mounts(self.e.robot_cfg).items():
-            tfs.append(pose_to_tf(T, self.base_frame, frame, stamp))
+        kin = self.e.kin
+        for name, (frame, parent, T) in kin.sensors.items():
+            if parent != kin.mast_frame or not kin.has_mast:
+                parent = self.base_frame
+            tfs.append(pose_to_tf(T, parent, frame, stamp))
             if name == 'camera':
                 tfs.append(pose_to_tf(T_CAMLINK_OPTICAL, frame, self.cfg['camera']['optical_frame'], stamp))
-        g = self.cfg.get('gnss', {})
-        tfs.append(pose_to_tf(make_T(g.get('antenna_xyz', [0.0, 0.0, 0.0])), self.base_frame,
-                              g.get('frame_id', 'gnss_link'), stamp))
+        if 'gnss' not in kin.sensors:
+            g = self.cfg.get('gnss', {})
+            tfs.append(pose_to_tf(make_T(g.get('antenna_xyz', [0.0, 0.0, 0.0])), self.base_frame,
+                                  g.get('frame_id', 'gnss_link'), stamp))
         self.stfb.sendTransform(tfs)
 
     def publish_static(self):
@@ -158,7 +168,18 @@ class RosBridge:
         if self.clock:
             self.pub['clock'].publish(Clock(clock=stamp))
         T_wb = e.T_wb
-        self.tfb.sendTransform(pose_to_tf(T_wb, self.map_frame, self.base_frame, stamp))
+        tfs = [pose_to_tf(T_wb, self.map_frame, self.base_frame, stamp)]
+        kin = e.kin
+        if kin.has_mast and self.stfb is not None:     # 런치(robot_state_publisher)에서는 joint_states 로 계산
+            tfs.append(pose_to_tf(kin.T_base_mast(e.mast_q), self.base_frame, kin.mast_frame, stamp))
+        self.tfb.sendTransform(tfs)
+        if kin.has_mast and e.tick % self.joint_every == 0:
+            js = JointState()
+            js.header.stamp = stamp
+            js.name = [kin.joint]
+            js.position = [float(e.mast_q)]
+            js.velocity = [float(np.sign(e.mast_target - e.mast_q) * kin.rate) if e.mast_q != e.mast_target else 0.0]
+            self.pub['joint_states'].publish(js)
         od = Odometry()
         od.header.frame_id, od.header.stamp, od.child_frame_id = self.map_frame, stamp, self.base_frame
         od.pose.pose.position.x, od.pose.pose.position.y, od.pose.pose.position.z = map(float, T_wb[:3, 3])

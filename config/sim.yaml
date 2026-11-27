@@ -90,6 +90,8 @@ sim:
   traffic_topic: /sim/traffic      # PoseArray, 슬롯 순서 고정 (비활성 슬롯은 z=-1000)
   events_topic: /sim/events        # JSON: 인지/감속/차로변경/추돌
   scenario_topic: /sim/scenario    # JSON (latched): 사고 위치, 비콘 배치, 환경
+  deploy_topic: /beacon/deploy     # std_msgs/Bool: true 마스트 펴기, false 접기 (상위 제어기)
+  joint_states_topic: /joint_states   # sensor_msgs/JointState: mast_joint (0 접힘 ~ 펴짐 각도)
 
 pandar40p:
   enabled: true

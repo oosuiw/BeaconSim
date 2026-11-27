@@ -110,17 +110,26 @@ T_CAMLINK_OPTICAL = make_T((0, 0, 0), (-np.pi / 2, 0, -np.pi / 2))
 
 
 def sensor_mounts(robot_cfg):
-    """robot.yaml → {name: (frame_id, T_base_sensor)}"""
-    out = {}
-    for name, s in robot_cfg['sensors'].items():
-        out[name] = (s['frame_id'], make_T(s['xyz'], s['rpy']))
-    return out
+    """robot.yaml → {name: (frame_id, T_base_sensor)} — 접이식 마스트가 있으면 펴짐 상태 기준.
+    움직이는 마스트까지 다루려면 robot_model.RobotKin 을 쓴다."""
+    from .robot_model import RobotKin
+    return RobotKin(robot_cfg).mounts()
 
 
 def load_robot_parts():
+    """{부품: (v, f)} base_link 좌표 (접이식 마스트는 펴짐 상태). 링크별 메시는 robot_model.load_robot_links."""
     d = np.load(os.path.join(robot_mesh_dir(), 'robot_parts.npz'))
-    names = sorted({k[:-2] for k in d.files})
-    return {n: (d[f'{n}_v'], d[f'{n}_f']) for n in names}
+    import json
+    meta = json.loads(bytes(d['meta']).decode()) if 'meta' in d.files else {}
+    pivot = np.asarray(meta.get('mast_pivot', [0, 0, 0]), np.float32)
+    names = sorted({k[:-2] for k in d.files if k.endswith(('_v', '_f'))})
+    out = {}
+    for n in names:
+        v = d[f'{n}_v']
+        if meta.get('parts', {}).get(n, {}).get('link') == 'mast':
+            v = v + pivot
+        out[n] = (v, d[f'{n}_f'])
+    return out
 
 
 ROBOT_PART_COLORS = {
@@ -130,16 +139,41 @@ ROBOT_PART_COLORS = {
 
 
 def build_urdf(robot_cfg):
-    """robot.yaml 하나로 URDF 생성 → TF와 심 센서 포즈가 같은 값을 쓴다."""
+    """robot.yaml 하나로 URDF 생성 → TF와 심 센서 포즈가 같은 값을 쓴다.
+    접이식 마스트가 있으면 base_link → mast_link 회전 관절(mast_joint, 0 = 접힘)을 넣는다 (joint_states 필요)."""
+    from .robot_model import load_robot_links
     mesh_dir = robot_mesh_dir()
     lines = ['<?xml version="1.0"?>', '<robot name="safety_beacon">']
-    for part, c in ROBOT_PART_COLORS.items():
-        lines.append(f'  <material name="{part}_mat"><color rgba="{c[0]} {c[1]} {c[2]} 1"/></material>')
-    lines.append('  <link name="base_link">')
-    for part in ROBOT_PART_COLORS:
-        lines.append(f'    <visual name="{part}"><geometry><mesh filename="file://{mesh_dir}/{part}.stl"/></geometry>'
-                     f'<material name="{part}_mat"/></visual>')
-    lines.append('  </link>')
+    try:
+        parts, _, _ = load_robot_links()
+    except Exception:       # noqa: BLE001
+        parts = [(p, 'base', None, None, c) for p, c in ROBOT_PART_COLORS.items()]
+    mast = robot_cfg.get('mast')
+    by_link = {}
+    for name, link, _, _, c in parts:
+        if link not in ('base', 'mast'):      # 크랭크·연결 링크는 화면용 (URDF 에선 생략)
+            continue
+        lines.append(f'  <material name="{name}_mat"><color rgba="{c[0]} {c[1]} {c[2]} 1"/></material>')
+        by_link.setdefault(link, []).append(name)
+    for link, lname in [('base', 'base_link'), ('mast', (mast or {}).get('frame_id', 'mast_link'))]:
+        if link == 'mast' and not mast:
+            continue
+        lines.append(f'  <link name="{lname}">')
+        for part in by_link.get(link, []):
+            lines.append(f'    <visual name="{part}"><geometry><mesh filename="file://{mesh_dir}/{part}.stl"/></geometry>'
+                         f'<material name="{part}_mat"/></visual>')
+        lines.append('  </link>')
+    if mast:
+        p, a, dep = mast['pivot'], mast['axis'], float(mast['deployed'])
+        # 원점: 접힘(q=0) 자세 = 펴짐 기준에서 축으로 -deployed 회전
+        from .robot_model import rot
+        R0 = rot(a, -dep)
+        rpy = (np.arctan2(R0[2, 1], R0[2, 2]), np.arcsin(-np.clip(R0[2, 0], -1, 1)), np.arctan2(R0[1, 0], R0[0, 0]))
+        lines.append(f'  <joint name="{mast.get("joint", "mast_joint")}" type="revolute"><parent link="base_link"/>'
+                     f'<child link="{mast.get("frame_id", "mast_link")}"/>'
+                     f'<origin xyz="{p[0]:.5f} {p[1]:.5f} {p[2]:.5f}" rpy="{rpy[0]:.6f} {rpy[1]:.6f} {rpy[2]:.6f}"/>'
+                     f'<axis xyz="{a[0]} {a[1]} {a[2]}"/><limit lower="0" upper="{dep:.5f}" effort="10" '
+                     f'velocity="{dep / max(float(mast.get("deploy_time", 4.0)), 1e-3):.4f}"/></joint>')
 
     def joint(parent, child, xyz, rpy):
         lines.append(f'  <link name="{child}"/>')
@@ -147,7 +181,7 @@ def build_urdf(robot_cfg):
                      f'<origin xyz="{xyz[0]:.5f} {xyz[1]:.5f} {xyz[2]:.5f}" rpy="{rpy[0]:.6f} {rpy[1]:.6f} {rpy[2]:.6f}"/></joint>')
 
     for name, s in robot_cfg['sensors'].items():
-        joint('base_link', s['frame_id'], s['xyz'], s['rpy'])
+        joint(s.get('parent', 'base_link') if mast else 'base_link', s['frame_id'], s['xyz'], s['rpy'])
         if name == 'camera':
             joint(s['frame_id'], 'camera_optical_link', (0, 0, 0), (-np.pi / 2, 0, -np.pi / 2))
     lines.append('</robot>')

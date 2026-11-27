@@ -28,6 +28,16 @@ func run(client: Node, dir: String) -> void:
 	await _click(c.start_ui.start_btn)
 	await _wait_world(-1)
 	_check("개발 시작 → 시작 화면 닫힘", not c.start_ui.visible and c.mode_msg["mode"] == "dev")
+	# 접이식 마스트 (있는 모델만): 접힌 채 시작 → U 키로 펴기
+	await _sleep(1.0)
+	if typeof(c.st.get("mast")) == TYPE_DICTIONARY:
+		_check("마스트: 접힌 채로 시작", float(c.st["mast"]["frac"]) < 0.01)
+		c._preset("beacon")
+		await _shot("0_mast_folded")
+		await _key(KEY_U)
+		await _sleep(5.0)
+		_check("U 키 → 마스트 펴짐", float(c.st["mast"]["frac"]) > 0.99)
+		await _shot("0_mast_deployed")
 	await _sleep(2.0)
 	# 1) 교통 탭 → '접근 차량 켜기' 끄기 → 교통량 슬라이더 비활성
 	await _click(c.sidebar.tab_btns[2])

@@ -34,7 +34,7 @@ from .environment import EnvParams
 from .evaluate import subscribe_eval
 from .modes import CondMixin, default_test
 from .session import RegressRun, TestSession, save_regression
-from .godot_link import C, CameraModel, godot_env, export_scene, godot_bin, project_dir, to_g, xform_g
+from .godot_link import C, CameraModel, godot_env, robot_links_g, export_scene, godot_bin, project_dir, to_g, xform_g
 from .roadgen import RoadParams, generate
 from .ros_link import RosLink
 from .traffic import B_CRASH, ScenarioParams, TrafficParams
@@ -625,6 +625,8 @@ class Server:
             be.export_async()
         elif a == 'apply_sim_yaml':
             be.apply_sim_yaml()
+        elif a == 'mast' and be.engine is not None and be.mode in ('dev', 'test'):
+            be.engine.set_mast(be.engine.mast_target <= 0, 'key')          # 펴기 ↔ 접기
         elif a == 'select_mode' and arg in ('dev', 'test', 'regress'):
             if be.mode_sel != arg and arg in ('dev', 'test'):
                 be.tparams.enabled = arg == 'test'         # 개발 = 교통 끔, 시험 = 교통 켬 (기본)
@@ -722,11 +724,11 @@ class Server:
             arrays['lane_pts'] = (to_g(lane[0], origin)).astype('f4')
             arrays['lane_cols'] = lane[1].astype('f4')
         specs = be.engine.traffic.specs
-        if 'ars408' in be.engine.mounts:                       # 레이더 감지 범위 면 (비콘 기준 고정 모양)
+        if 'ars408' in be.engine.kin.sensors:                  # 레이더 감지 범위 면 (레이더 좌표, 위치는 상태마다)
             tri, col, edge = radar_fan(be.base_cfg['ars408'])
             z = np.zeros(3)
             arrays.update(fan_tri=to_g(tri, z).astype('f4'), fan_col=col, fan_edge=to_g(edge, z).astype('f4'))
-            radar_T = xform_g(be.engine.mounts['ars408'][1], z)
+            radar_T = xform_g(be.engine.mounts['ars408'][1], z)   # 첫 값 (이후 state 의 radar_T)
         else:
             radar_T = None
         self.send({'type': 'world', 'radar_T': radar_T, 'seq': be.world_seq, 'scene': js, 'bounds': [np.minimum(lo, hi).tolist(),
@@ -754,19 +756,28 @@ class Server:
                   'valid': bool(g['valid']), 'xyz': to_g(g['xyz'], o).tolist(), 'truth': to_g(g['truth'], o).tolist(),
                   'color': list(GNSS_COLOR[g['status']])}
         T_wb = snap['T_wb']
+        q = snap['mast_q']
+        kin = e.kin
+        T_b_opt = kin.mount('camera', q)[1] @ T_CAMLINK_OPTICAL          # 마스트를 따라감
+        mast = {'has': kin.has_mast, 'frac': round(float(snap['mast_frac']), 3),
+                'target': 1 if snap['mast_target'] > 0 else 0} if kin.has_mast else None
         msg = {'type': 'state', 'world': be.world_seq, 't': snap['t'], 'paused': be.paused, 'rtf': be.rtf,
                'rtf_meas': be.eth.measured_rtf if be.eth else 0.0, 'v': snap['v'], 'cmd_src': snap['cmd_src'],
                'damaged': bool(snap['damaged']), 'contact': snap['contact'],
                'acc_dist': abs(snap['s_b'] - e.scn.accident_s), 'counts': snap['counts'],
                'n_active': int(len(act)), 'scc_follow': int((snap['scc_target'] == -2).sum()),
                'in_tunnel': bool(e.model.in_tunnel(snap['s_b'], margin=30)),
-               'robot': xform_g(T_wb, o), 'cam': xform_g(T_wb @ be.T_b_opt, o, cam=True), 'gnss': gj,
+               'robot': xform_g(T_wb, o), 'cam': xform_g(T_wb @ T_b_opt, o, cam=True), 'gnss': gj,
+               'links': robot_links_g(kin, q), 'mast': mast,
+               'radar_T': xform_g(kin.mount('ars408', q)[1], np.zeros(3)) if 'ars408' in kin.sensors else None,
                'ros': bool(be.ros is not None and be.ros.ok)}
         self.send(msg, {'veh_idx': act.astype('<i4'), 'veh_T': xforms_g(snap['traffic_T'][act], o),
                         'veh_flags': flags.astype(np.uint8),
                         'veh_kmh': (np.linalg.norm(snap['traffic_vel'][act], axis=1) * 3.6).astype('f4')})
         for ev in snap['events']:
-            if ev[1] in ('crash', 'scc_lock', 'beacon_contact', 'beacon_damaged'):
+            if ev[1] == 'mast':
+                be.log(f'[{ev[0]:.1f}s] {ev[3]}')
+            elif ev[1] in ('crash', 'scc_lock', 'beacon_contact', 'beacon_damaged'):
                 be.log(f'[{ev[0]:.1f}s] 차량 #{ev[2] if ev[2] >= 0 else "-"} {ev[3]}')
         self._send_sensors(snap)
         self._camera(snap)

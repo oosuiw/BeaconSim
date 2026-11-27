@@ -71,6 +71,8 @@ const I_SLIDERS := 0xf1de
 const I_ROAD := 0xf018
 const I_CLOUD := 0xf743
 const I_CUBE := 0xf1b2
+const I_UP := 0xf062
+const I_DOWN := 0xf063
 const ICONS := {"road": I_ROAD, "burst": I_BURST, "car": I_CAR, "cloud": I_CLOUD, "stopwatch": I_STOPWATCH}
 
 static func ic(code: int) -> String:

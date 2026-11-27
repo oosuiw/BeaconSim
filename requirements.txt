@@ -10,3 +10,6 @@ imgui-bundle>=1.92
 glfw>=2.7
 fonttools>=4.29
 matplotlib>=3.7
+
+# 선택: 접이식 비콘 CAD(STEP)로 로봇 모델 만들 때만 (tools/build_robot.py --step-up/--step-down)
+# cadquery-ocp

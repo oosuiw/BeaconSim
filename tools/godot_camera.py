@@ -73,7 +73,7 @@ def main():
     glb, js, origin = export_scene(eng, os.path.join(a.out, 'scene'), cfg['camera'], camr.Wr, camr.Hr, camr.K[1, 1])
     print(f'장면 내보내기 {time.time() - t0:.1f} s ({os.path.getsize(glb) / 1e6:.1f} MB)', flush=True)
     t0 = time.time()
-    gl = GodotLink(js, origin, T_b_opt)
+    gl = GodotLink(js, origin, T_b_opt, kin=eng.kin)
     print(f'Godot 준비 {time.time() - t0:.1f} s', flush=True)
     try:
         if a.live > 0:

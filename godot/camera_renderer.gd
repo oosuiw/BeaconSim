@@ -71,7 +71,7 @@ func _build_viewport(hidden: bool) -> void:
 
 func _apply(msg: Dictionary) -> void:
 	cam.transform = BeaconWorld.xf(msg["cam"])
-	world.set_robot(msg["robot"])
+	world.set_robot(msg["robot"], msg.get("links"))
 	var idx := PackedInt32Array()
 	var T := PackedFloat32Array()
 	for row in msg["veh"]:

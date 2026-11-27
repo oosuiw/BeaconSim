@@ -73,6 +73,7 @@ var lbl_time: Label
 var lbl_env: Label
 var lbl_cmd: Label
 var lbl_ros: Label
+var btn_mast: Button
 var toggles := {}
 var dash := {}
 var dash_panel: PanelContainer
@@ -344,7 +345,9 @@ func _on_state(m: Dictionary, bin: PackedByteArray) -> void:
 		return
 	st = m
 	robot_T = BeaconWorld.xf(m["robot"])
-	world.set_robot(m["robot"])
+	world.set_robot(m["robot"], m.get("links"))
+	if m.get("radar_T") != null:
+		fan_local = BeaconWorld.xf(m["radar_T"])
 	var idx := _arr(m, bin, "veh_idx").to_int32_array()
 	var T := _arr(m, bin, "veh_T").to_float32_array()
 	world.set_vehicles(idx, T)
@@ -731,6 +734,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 				_preset("overview")
 			KEY_3:
 				_preset("tunnel")
+			KEY_U:
+				_on_action("mast")
 			KEY_F1:
 				help_layer.visible = true
 
@@ -908,6 +913,10 @@ func _build_playbar() -> void:
 	var b2 := K.btn(K.ic(K.I_MAP), "맵 재생성 (G)")
 	b2.pressed.connect(func(): _on_action("regen_map"))
 	h.add_child(b2)
+	btn_mast = K.btn("", "마스트(센서함) 펴기 / 접기 (U) — 상위 제어기는 /beacon/deploy")
+	btn_mast.pressed.connect(func(): _on_action("mast"))
+	btn_mast.visible = false
+	h.add_child(btn_mast)
 	lbl_time = K.chip("", K.TEXT)
 	lbl_env = K.chip("", K.TEAL)
 	lbl_cmd = K.chip("", K.MUTED)
@@ -956,6 +965,10 @@ func _build_dashboard() -> void:
 	var dmg := K.chip("", K.DANGER)
 	dash["damage"] = dmg
 	v.add_child(dmg)
+	var mc := K.chip("", K.OK)
+	mc.visible = false
+	dash["mast"] = mc
+	v.add_child(mc)
 	var g := K.chip("", K.OK)
 	dash["gnss"] = g
 	v.add_child(g)
@@ -1051,7 +1064,7 @@ func _build_help() -> void:
 	for it in [["↑ / ↓", "비콘 전진 / 후진 (ROS /cmd_vel이 오면 그쪽 우선)"], ["← / →", "비콘 회전"],
 			["좌클릭 드래그", "시점 회전"], ["우클릭 드래그", "시점 이동 (따라가기 해제)"], ["휠", "확대 / 축소"],
 			["F", "비콘 따라가기"], ["1  2  3", "비콘 / 전체 / 터널 시점"], ["Space", "일시정지 / 재생"],
-			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["F1", "도움말"]]:
+			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["U", "마스트(센서함) 펴기 / 접기"], ["F1", "도움말"]]:
 		var c := K.chip(it[0], K.ACCENT)
 		c.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		c.custom_minimum_size = Vector2(130, 0)
@@ -1094,6 +1107,28 @@ func _update_ui() -> void:
 		dash["damage"].visible = true
 	else:
 		dash["damage"].visible = false
+	# 접이식 마스트
+	var ms = st.get("mast")
+	var has_mast := typeof(ms) == TYPE_DICTIONARY
+	btn_mast.visible = has_mast
+	dash["mast"].visible = has_mast
+	if has_mast:
+		var frac := float(ms["frac"])
+		var deploying := int(ms["target"]) == 1
+		var txt: String
+		var col: Color
+		if frac >= 0.999:
+			txt = "마스트 펴짐 — 작업 자세"
+			col = K.OK
+		elif frac <= 0.001 and not deploying:
+			txt = "마스트 접힘"
+			col = K.MUTED
+		else:
+			txt = "마스트 %s %d%%" % ["펴는 중" if deploying else "접는 중", int(round(frac * 100))]
+			col = K.WARN
+		dash["mast"].text = K.ic(K.I_UP if deploying else K.I_DOWN) + "  " + txt
+		K.set_chip_color(dash["mast"], col)
+		btn_mast.text = K.ic(K.I_DOWN if deploying else K.I_UP) + ("  접기" if deploying else "  펴기")
 	var c: Dictionary = st["counts"]
 	dash["active"].text = str(int(st["n_active"]))
 	for k in ["noticed", "lane_change", "brake", "scc_lock"]:

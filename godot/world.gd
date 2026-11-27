@@ -94,9 +94,14 @@ func set_vehicles(idx: PackedInt32Array, T: PackedFloat32Array) -> void:
 			slots[i].visible = false
 	shown = now
 
-func set_robot(T) -> void:
+func set_robot(T, links = null) -> void:
 	if robot:
 		robot.transform = xf(T)
+		if typeof(links) == TYPE_DICTIONARY:          # 접이식 마스트·링크 (비콘 기준 로컬 변환)
+			for name in links:
+				var n := robot.find_child("link_" + str(name), false, false) as Node3D
+				if n:
+					n.transform = xf(links[name])
 
 ## 비·눈 파티클을 카메라 앞에 둔다 (처음/순간이동이면 미리 계산된 상태로 다시 시작)
 static func follow_weather(p: GPUParticles3D, cam: Camera3D) -> void:

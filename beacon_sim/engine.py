@@ -11,7 +11,8 @@ import time
 import numpy as np
 
 from . import rgl, scene
-from .common import load_robot_parts, sensor_mounts
+from .common import load_robot_parts
+from .robot_model import RobotKin, load_robot_links
 from .environment import EnvParams, notice_scale, resolve as resolve_env
 from .gnss import GnssF9P, GnssParams
 from .roadgen import RoadParams, generate
@@ -34,7 +35,13 @@ class SimEngine:
         self.traffic = TrafficSim(self.model, self.scn, TrafficParams(**cfg['traffic']), cfg['scenario']['seed'])
         self.env = resolve_env(EnvParams(**cfg.get('environment', {})), cfg['scenario']['seed'])
         self.gnss = GnssF9P(self.model, GnssParams(**cfg.get('gnss', {})), cfg['scenario']['seed'])
-        self.mounts = sensor_mounts(robot_cfg)
+        self.robot_links, links_meta, _ = load_robot_links()
+        self.kin = RobotKin(robot_cfg, links_meta)
+        # 접이식 마스트: 접힌 채로 시작해서 펴면서 작업 시작 (마스트 없는 예전 모델은 항상 펴짐)
+        self.mast_q = 0.0 if self.kin.has_mast else self.kin.q_dep
+        self.mast_target = self.mast_q
+        self.mast_cmd_src = '-'
+        self.mast_auto_done = not self.kin.has_mast
         sc = cfg['sim']
         self.max_v, self.max_w, self.cmd_timeout = sc['max_linear'], sc['max_angular'], sc['cmd_vel_timeout']
 
@@ -104,7 +111,8 @@ class SimEngine:
             self._ents.append(e)
         ign = {n: self.cfg[n]['sensor_id'] for n in ('pandar40p', 'tele15', 'ars408')}
         self.robot_entities = []
-        for k, (name, (v, f)) in enumerate(load_robot_parts().items()):
+        self.robot_entity_links = []
+        for k, (name, link, v, f, _) in enumerate(self.robot_links):
             if name == 'pandar40p':
                 # Pandar 하우징은 레이 원점을 감싸는 원통: '자기 무시' 엔티티가 움직이면 RGL v0.21 커널이
                 # illegal memory access로 죽는 경우가 있어 제외 (다른 센서 시야를 가리지 않으므로 영향 없음)
@@ -113,6 +121,7 @@ class SimEngine:
             self._meshes.append(mesh)
             self.robot_entities.append(rgl.Entity(mesh, entity_id=entity_id('robot', k),
                                                   laser_retro=scene.RETRO['robot'], ignored_by_sensor=ign.get(name)))
+            self.robot_entity_links.append(link)
 
     def close(self):
         """RGL 객체 해제 (맵 재생성 시)."""
@@ -131,6 +140,38 @@ class SimEngine:
     def set_cmd(self, source, v, w):
         """source: 'ros' | 'key'. ROS 명령이 최근에 있으면 우선."""
         self.cmd[source] = (float(v), float(w), self.t)
+
+    # ------------------------------------------------------------ 접이식 마스트
+    @property
+    def mounts(self):
+        """센서 → (frame_id, T_base_sensor) — 지금 마스트 각도 기준"""
+        return self.kin.mounts(self.mast_q)
+
+    def set_mast(self, deploy, source='key'):
+        """마스트 펴기(True)/접기(False). source: 'ros' | 'key' | 'auto'"""
+        if not self.kin.has_mast or self.damaged:
+            return
+        target = self.kin.q_dep if deploy else 0.0
+        self.mast_auto_done = True
+        if abs(target - self.mast_target) > 1e-9:
+            self.mast_target = target
+            self.mast_cmd_src = source
+            self.events.append((self.t, 'mast', -1, f'마스트 {"펴기" if deploy else "접기"} 시작 ({source})'))
+
+    @property
+    def mast_frac(self):
+        return 1.0 if not self.kin.has_mast else self.mast_q / max(self.kin.q_dep, 1e-9)
+
+    def _step_mast(self, dt):
+        if not self.mast_auto_done and self.scn.sp.mast_auto and self.t >= self.scn.sp.mast_deploy_at:
+            self.set_mast(True, 'auto')
+        if self.mast_q == self.mast_target:
+            return
+        d = self.mast_target - self.mast_q
+        step = self.kin.rate * dt
+        self.mast_q = self.mast_target if abs(d) <= step * (1 + 1e-6) else self.mast_q + np.sign(d) * step
+        if self.mast_q == self.mast_target:
+            self.events.append((self.t, 'mast', -1, '마스트 ' + ('펴짐 — 작업 자세' if self.mast_q > 0 else '접힘')))
 
     # ------------------------------------------------------------ 충돌 / 파손 / 고장 / 시야
     def _faulted(self, name):
@@ -268,6 +309,8 @@ class SimEngine:
                 self.contact = hit
                 self.v = self.w = 0.0
             self.T_wb, self.s_b, self.t_b = self._ground_pose()
+            if not self.damaged:
+                self._step_mast(dt)
             if self.tick % int(round(TrafficSim.DT / dt)) == 0:
                 self.traffic.step(self.s_b, self.t_b)
                 if self.traffic.beacon_hits and not self.damaged:
@@ -280,8 +323,11 @@ class SimEngine:
         if due:
             with _RGL_LOCK:
                 rgl.set_scene_time(int(self.t * 1e9) + 1_000_000_000)
-                for e in self.robot_entities:
-                    e.set_transform(self.T_wb)
+                link_T = {}
+                for e, link in zip(self.robot_entities, self.robot_entity_links):
+                    if link not in link_T:
+                        link_T[link] = self.T_wb @ self.kin.link_T(link, self.mast_q)
+                    e.set_transform(link_T[link])
                 with self.lock:
                     Ts, _ = self.traffic.poses_at(self.t)
                 # 움직인 차량만 RGL 에 보낸다 (비활성 차량은 지하에 그대로 → 매번 200대 호출하던 것 제거)
@@ -300,8 +346,11 @@ class SimEngine:
         if self.gnss.gp.enabled and self.t >= self.gnss_next - 1e-9:
             self.gnss_next += 1.0 / self.gnss.gp.rate_hz
             if not self._faulted('gnss'):
-                T_ant = self.T_wb.copy()                    # 안테나 위치 (base_link + antenna_xyz)
-                T_ant[:3, 3] = self.T_wb[:3, :3] @ np.asarray(self.gnss.gp.antenna_xyz, float) + self.T_wb[:3, 3]
+                T_ant = self.T_wb.copy()                    # 안테나 위치: 마스트 위 GNSS (robot.yaml) 또는 base_link + antenna_xyz
+                if 'gnss' in self.kin.sensors:
+                    T_ant[:3, 3] = (self.T_wb @ self.kin.mount('gnss', self.mast_q)[1])[:3, 3]
+                else:
+                    T_ant[:3, 3] = self.T_wb[:3, :3] @ np.asarray(self.gnss.gp.antenna_xyz, float) + self.T_wb[:3, 3]
                 fired['gnss'] = self.gnss.step(self.t, T_ant, self.s_b)
         ev = self.traffic.events[self.n_events:] + self.events
         self.n_events = len(self.traffic.events)
@@ -312,7 +361,7 @@ class SimEngine:
         return fired, ev
 
     def _fire(self, name):
-        frame, T_bs = self.mounts[name]
+        frame, T_bs = self.kin.mount(name, self.mast_q)
         T_ws = self.T_wb @ T_bs
         lv, av = self._sensor_velocity(T_bs)
         out = {'t': self.t, 'frame': frame, 'T_ws': T_ws, 'T_wb': self.T_wb.copy()}
@@ -358,6 +407,7 @@ class SimEngine:
             snap = {
             't': self.t, 'T_wb': self.T_wb.copy(), 'v': self.v, 'w': self.w, 'cmd_src': self.cmd_src,
             'damaged': self.damaged, 'contact': self.contact,
+            'mast_q': self.mast_q, 'mast_target': self.mast_target, 'mast_frac': self.mast_frac,
             's_b': self.s_b, 't_b': self.t_b,
             'traffic_T': Ts, 'traffic_vel': vel, 'active': tr.active.copy(), 'crashed': tr.crashed.copy(),
             'noticed': tr.noticed.copy(), 'scc': tr.scc.copy(), 'scc_target': tr.scc_target.copy(),
