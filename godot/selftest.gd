@@ -10,7 +10,20 @@ func run(client: Node, dir: String) -> void:
 	c = client
 	out = dir
 	DirAccess.make_dir_recursive_absolute(out)
+	# 0) 시작 화면: 개발 카드 → 개발 시작
+	while c.mode_msg.is_empty():
+		await c.get_tree().process_frame
+	_check("시작 화면 표시", c.start_ui.visible)
+	await _shot("0_start")
+	await _click(c.start_ui.cards["test"])
+	await _sleep(0.5)
+	_check("시험 카드 → 시험 설정 탭", c.start_ui.form.tab_btns.size() == 5)
+	await _click(c.start_ui.cards["dev"])
+	await _sleep(0.5)
+	_check("개발 카드 선택", c.mode_msg["mode_sel"] == "dev" and c.start_ui.form.tab_btns.size() == 4)
+	await _click(c.start_ui.start_btn)
 	await _wait_world(-1)
+	_check("개발 시작 → 시작 화면 닫힘", not c.start_ui.visible and c.mode_msg["mode"] == "dev")
 	await _sleep(2.0)
 	# 1) 교통 탭 → '접근 차량 켜기' 끄기 → 교통량 슬라이더 비활성
 	await _click(c.sidebar.tab_btns[2])
@@ -91,6 +104,46 @@ func run(client: Node, dir: String) -> void:
 	# 원복: 범례·색
 	await _click(seg[0])
 	await _click(lg)
+	# 9) 시험 모드: 홈 → 시험 카드 → 6초 시험 → 자동 종료 · 결과 창
+	await _click(c.sidebar.home_btn)
+	await _sleep(0.5)
+	_check("홈 버튼 → 시작 화면", c.start_ui.visible and c.start_ui.back_btn.visible)
+	await _click(c.start_ui.cards["test"])
+	await _sleep(0.4)
+	c._on_edit("test.dur_on", true)
+	c._on_edit("test.duration", 6.0)
+	await _sleep(0.4)
+	_check("시험 시간 설정이 시작 화면 폼에 반영", absf(float(c.start_ui.form.vals.get("test.duration", 0)) - 6.0) < 1e-6)
+	seq = c.world_seq
+	await _click(c.start_ui.start_btn)
+	await _wait_world(seq)
+	await _sleep(1.0)
+	_check("시험 시작 → 사이드바 시험 카드", c.sidebar.prog_lbl != null and c.mode_msg["mode"] == "test")
+	_check("시험 모드 탭에 '시험' 탭", c.sidebar.tab_btns.size() == 6 and c.sidebar.tab_btns[5].text.contains("시험"))
+	await _shot("5_test_running")
+	var t0 := Time.get_ticks_msec()
+	while not c.result_dlg.visible and Time.get_ticks_msec() - t0 < 30000:
+		await c.get_tree().process_frame
+	_check("시험 시간 종료 → 결과 창", c.result_dlg.visible)
+	await _shot("6_result")
+	await _key(KEY_ESCAPE)
+	await _sleep(0.6)
+	_check("Esc 결과 창 닫힘 · 사이드바 종료 카드", not c.result_dlg.visible and c.mode_msg.get("session", {}).get("done", false))
+	# 10) 시험 중 조건 변경 → 잠금 배너 → 되돌리기
+	c._on_edit("env.weather", "fog")
+	await _sleep(1.0)
+	_check("조건 변경 → 잠금 배너", c.mode_msg.get("changes", []).size() > 0 and c.sidebar.status_box.get_child_count() >= 2)
+	await _shot("7_banner")
+	c._on_action("revert")
+	await _sleep(1.0)
+	_check("되돌리기 → 배너 사라짐", c.mode_msg.get("changes", []).size() == 0)
+	# 11) 회귀 화면
+	await _click(c.sidebar.home_btn)
+	await _sleep(0.4)
+	await _click(c.start_ui.cards["regress"])
+	await _sleep(1.0)
+	_check("회귀 카드 → 시나리오 목록", c.start_ui.left_reg.visible and c.start_ui.reg_list.get_child_count() > 0)
+	await _shot("8_regress")
 	print("SELFTEST DONE fails=%d" % fails)
 	c._send({"type": "quit"})
 	c.get_tree().quit()
@@ -149,6 +202,10 @@ func _click(ctrl: Control) -> void:
 	await c.get_tree().process_frame
 
 func _drag(ctrl: Control, f0: float, f1: float) -> void:
+	if c.sidebar.scroll.is_ancestor_of(ctrl):
+		c.sidebar.scroll.ensure_control_visible(ctrl)
+		await c.get_tree().process_frame
+		await c.get_tree().process_frame
 	var p0 := _pt(ctrl, f0)
 	var p1 := _pt(ctrl, f1)
 	_move(p0, Vector2.ZERO, 0)

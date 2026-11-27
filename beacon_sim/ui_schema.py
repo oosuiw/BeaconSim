@@ -7,12 +7,19 @@
 값 키 묶음: map/scn/traffic/env = 생성 파라미터, app = 랜덤 시드 등, key = 방향키, export = 저장,
   view = 화면 표시 (Godot 이 바로 적용, 백엔드는 저장만).
 """
+import os
+import time
 from dataclasses import fields
+
+from .evaluate import CRITERIA_DEFAULT_VALUE, CRITERIA_KO
+from .modes import INT_CRITERIA, MODE_KO
+from .session import PRESETS, SENSORS_KO
 
 # Font Awesome 6 Solid 코드
 I = dict(road=0xf018, burst=0xf5e1, car=0xf5e4, cloud=0xf743, eye=0xf06e, floppy=0xf0c7, grip=0xf7a5, info=0xf05a,
          keyboard=0xf11c, user=0xf007, gauge=0xf625, dish=0xf7c0, layer=0xf5fd, sliders=0xf1de, video=0xf03d,
-         terminal=0xf120, download=0xf019, file_export=0xf56e, folder=0xf07c, map=0xf279, rotate=0xf2f9)
+         terminal=0xf120, download=0xf019, file_export=0xf56e, folder=0xf07c, map=0xf279, rotate=0xf2f9,
+         clipboard=0xf46c, check=0xf058, bolt=0xf0e7, plug=0xf1e6, trash=0xf1f8, plus=0xf067, stopwatch=0xf2f2)
 
 # 화면 표시 기본값 (Godot 쪽 show 와 같은 키)
 VIEW_DEFAULT = dict(pandar=True, tele=True, radar=True, radar_fov=False, gnss=True, camera=True, labels=True,
@@ -38,7 +45,8 @@ def _card(title, icon, items, color='text'):
     return dict(title=title, icon=I[icon], color=color, items=items)
 
 
-def tabs(be):
+def tabs(be, mode=None, start=False):
+    """mode: 'test' 이면 시험 설정 탭 추가. start=True 면 시작 화면용 (맵·시나리오·교통·환경 [+시험], 버튼·정보 없음)."""
     lanes = be.params.lanes
     tab_map = [
         _card('도로 생성', 'road', [
@@ -150,12 +158,61 @@ def tabs(be):
             dict(t='note', text='현재 맵·시나리오·교통·환경 설정을 config/sim.yaml 에 기록'),
             dict(t='button', label='sim.yaml 에 적용', icon=I['file_export'], action='apply_sim_yaml')]),
     ]
-    return [dict(id='map', label='맵', icon=I['road'], cards=tab_map),
-            dict(id='scn', label='시나리오', icon=I['burst'], cards=tab_scn),
-            dict(id='traffic', label='교통', icon=I['car'], cards=tab_traffic),
-            dict(id='env', label='환경', icon=I['cloud'], cards=tab_env),
-            dict(id='view', label='보기', icon=I['eye'], cards=tab_view),
-            dict(id='save', label='저장', icon=I['floppy'], cards=tab_save)]
+    out = [dict(id='map', label='맵', icon=I['road'], cards=tab_map),
+           dict(id='scn', label='시나리오', icon=I['burst'], cards=tab_scn),
+           dict(id='traffic', label='교통', icon=I['car'], cards=tab_traffic),
+           dict(id='env', label='환경', icon=I['cloud'], cards=tab_env)]
+    if start:
+        for t in out:                         # 시작 화면: 재생성 버튼·현재 정보 카드 빼기
+            t['cards'] = [c for c in t['cards'] if c.get('t') != 'button' and c.get('color') != 'muted'
+                          and not (c.get('t') == 'note' and '재시작' in c.get('text', ''))]
+        if mode == 'test':
+            out.append(dict(id='test', label='시험 설정', icon=I['clipboard'], cards=tab_test(be)))
+        return out
+    out.append(dict(id='view', label='보기', icon=I['eye'], cards=tab_view))
+    if mode == 'test':
+        out.append(dict(id='test', label='시험', icon=I['clipboard'], cards=tab_test(be)))
+    else:
+        out.append(dict(id='save', label='저장', icon=I['floppy'], cards=tab_save))
+    return out
+
+
+def tab_test(be):
+    crit = []
+    for k, label in CRITERIA_KO.items():
+        if k == 'beacon_not_damaged':
+            crit.append(_b(f'test.crit_on.{k}', label))
+        else:
+            num = dict(t='num', k=f'test.crit.{k}', min=0, max=10000, step=1 if k in INT_CRITERIA else 0.01,
+                       enable=f'test.crit_on.{k}', w=110)
+            crit.append(dict(t='row', items=[_b(f'test.crit_on.{k}', label, expand=True), num]))
+    faults = []
+    sens = [[k, v] for k, v in SENSORS_KO.items()]
+    for i, _ in enumerate(be.test.get('faults') or []):
+        faults.append(dict(t='row', items=[
+            dict(t='choice', k=f'test.faults.{i}.sensor', opts=sens, w=130),
+            dict(t='num', k=f'test.faults.{i}.t0', min=0, max=3600, step=1, suffix=' s', w=90),
+            dict(t='note', text='~'),
+            dict(t='num', k=f'test.faults.{i}.t1', min=0, max=3600, step=1, suffix=' s', w=90),
+            dict(t='button', label='', icon=I['trash'], action='fault_del', arg=i, w=40)]))
+    return [
+        _card('시험 정보', 'clipboard', [
+            dict(t='text', k='test.name', label='이름'),
+            dict(t='text', k='test.description', label='설명'),
+            _b('test.dur_on', '시험 시간 제한'),
+            _f('test.duration', '시험 시간', 10, 900, '%.0f s', 5, enable='test.dur_on'),
+            dict(t='note', text='제한이 없으면 "시험 종료"를 누를 때까지 진행')]),
+        _card('판정 기준', 'check', [dict(t='note', text='값은 예시입니다. 실차 요구사항에 맞춰 조정하세요.')] + crit +
+              [dict(t='note', text='측위·차선검출 기준은 아래 평가 토픽이 연결될 때만 판정 (없으면 N/A)')], 'ok'),
+        _card('센서 고장 주입', 'bolt', faults + [
+            dict(t='button', label='고장 추가', icon=I['plus'], action='fault_add'),
+            dict(t='note', text='지정 구간 동안 해당 센서 출력 없음 (카메라는 GUI 미적용)')], 'warn'),
+        _card('ROS 평가 토픽 (선택)', 'plug', [
+            dict(t='text', k='test.topics.localization', label='측위', hint='/localization/kinematic_state'),
+            dict(t='choice', k='test.topics.localization_type', label='측위 형식',
+                 opts=[['odom', 'Odometry'], ['pose', 'PoseStamped'], ['pose_cov', 'PoseWithCovarianceStamped']]),
+            dict(t='text', k='test.topics.lane_detection', label='차선검출', hint='PointCloud2 토픽 (Pandar 좌표)')]),
+    ]
 
 
 def values(be):
@@ -172,6 +229,25 @@ def values(be):
                 'export.busy': be.export_busy()})
     for k, v in be.view.items():
         out[f'view.{k}'] = v
+    t = be.test
+    out['test.name'] = t.get('name', '')
+    out['test.description'] = t.get('description', '')
+    out['test.dur_on'] = bool(t.get('duration'))
+    out['test.duration'] = float(t.get('duration') or 120.0)
+    crit = t.get('criteria') or {}
+    for k in CRITERIA_KO:
+        out[f'test.crit_on.{k}'] = k in crit
+        if k != 'beacon_not_damaged':
+            out[f'test.crit.{k}'] = crit.get(k, CRITERIA_DEFAULT_VALUE[k])
+    for i, f in enumerate(t.get('faults') or []):
+        out[f'test.faults.{i}.sensor'] = f.get('sensor', 'gnss')
+        out[f'test.faults.{i}.t0'] = float(f.get('t0', 0))
+        out[f'test.faults.{i}.t1'] = float(f.get('t1', 0))
+    tp = t.get('topics') or {}
+    out['test.topics.localization'] = tp.get('localization', '')
+    out['test.topics.localization_type'] = tp.get('localization_type', 'odom')
+    out['test.topics.lane_detection'] = tp.get('lane_detection', '')
+    out['regress.ros'] = be.regress_ros
     out['view.ui_zoom_auto'] = be.view.get('ui_zoom', 0.0) <= 0
     return out
 
@@ -208,6 +284,12 @@ def set_value(be, key, v):
         if grp == 'scn' and name == 'seed':
             be.rand_scn = False
         return False
+    if grp == 'test':
+        _set_test(be, name, v)
+        return False
+    if key == 'regress.ros':
+        be.regress_ros = bool(v)
+        return False
     if key == 'app.rand_map':
         be.rand_map = bool(v)
     elif key == 'app.rand_scn':
@@ -227,6 +309,107 @@ def set_value(be, key, v):
     elif grp == 'view' and name == 'follow':
         pass                                    # 시점 따라가기는 저장하지 않음 (Godot 상태)
     return False
+
+
+def _set_test(be, name, v):
+    t = be.test
+    if name in ('name', 'description'):
+        t[name] = str(v)
+    elif name == 'dur_on':
+        t['duration'] = 120.0 if v else 0.0
+    elif name == 'duration':
+        t['duration'] = float(v)
+    elif name.startswith('crit_on.'):
+        k = name.split('.', 1)[1]
+        crit = t.setdefault('criteria', {})
+        if v:
+            crit[k] = CRITERIA_DEFAULT_VALUE[k]
+        else:
+            crit.pop(k, None)
+    elif name.startswith('crit.'):
+        k = name.split('.', 1)[1]
+        crit = t.setdefault('criteria', {})
+        if k in crit:
+            crit[k] = max(0, int(round(float(v)))) if k in INT_CRITERIA else float(v)
+    elif name.startswith('faults.'):
+        _, i, field = name.split('.')
+        faults = t.setdefault('faults', [])
+        if int(i) < len(faults):
+            faults[int(i)][field] = str(v) if field == 'sensor' else float(v)
+    elif name.startswith('topics.'):
+        k = name.split('.', 1)[1]
+        tp = dict(t.get('topics') or {})
+        v = str(v).strip()
+        if v and not (k == 'localization_type' and v == 'odom'):
+            tp[k] = v
+        else:
+            tp.pop(k, None)
+        t['topics'] = tp
+
+
+_SC_CACHE = {}
+
+
+def _scenario_info(f):
+    import yaml
+    mt = os.path.getmtime(f)
+    if f not in _SC_CACHE or _SC_CACHE[f][0] != mt:
+        try:
+            with open(f) as fh:
+                d = yaml.safe_load(fh) or {}
+        except Exception:           # noqa: BLE001
+            d = {}
+        _SC_CACHE[f] = (mt, {k: d.get(k) for k in ('name', 'description', 'duration')})
+    return _SC_CACHE[f][1]
+
+
+def mode_state(be):
+    """시작 화면·시험 카드·변경 배너·결과 창·회귀 패널에 필요한 상태 한 묶음."""
+    from .common import ROOT
+    from .session import list_scenarios
+    building = be.build_future is not None and not be.build_future.done()
+    out = {'type': 'mode', 'mode': be.mode, 'mode_sel': be.mode_sel, 'prev_mode': be.prev_mode,
+           'mode_ko': MODE_KO, 'robot_ready': be.robot_cfg is not None,
+           'robot_busy': be.robot_future is not None and not be.robot_future.done(), 'building': building,
+           'ros': bool(be.ros is not None and be.ros.ok), 'presets': [[n, d] for n, d, _ in PRESETS],
+           'summary': be.summary_rows(be.mode_sel), 'changes': be.change_labels(),
+           'test_name': be.test.get('name', '')}
+    s = be.session
+    if s is not None:
+        out['session'] = {'name': s.test.get('name', ''), 'duration': s.duration, 'done': s.done,
+                          'ok': bool(s.result['ok']) if s.result else None,
+                          'n_iv': len(s.interventions) + (1 if s._iv else 0)}
+    r = be.test_result
+    if r is not None:
+        m = r['metrics']
+        out['result'] = {
+            'ok': bool(r['ok']), 'name': r['scenario']['name'], 'reason': r['reason'], 'complete': bool(r['complete']),
+            'dir': r['dir'], 'sim_time': m.get('sim_time_s'),
+            'rows': [[CRITERIA_KO.get(k, k), str(w), '-' if g is None else str(g), st] for k, w, g, st in r['rows']],
+            'metrics': (f'추돌 {m["crashes"]} · 비콘 추돌 {m["beacon_hits"]} · 최소 TTC {m["min_ttc_s"]} s · '
+                        f'인지 {m["noticed"]} · SCC 인식 {m["scc_locks"]} · GNSS FIX {m["gnss_fix_ratio"]:.0%} · '
+                        f'수동 개입 {m["interventions"]}회'),
+            'interventions': int(m.get('interventions') or 0)}
+        out['result_new'] = be.result_new
+        be.result_new = False
+    if be.mode_sel == 'regress' or be.mode == 'regress' or be.regress is not None:
+        bundled = os.path.join(ROOT, 'scenarios')
+        sc = []
+        for f in list_scenarios():
+            info_ = _scenario_info(f)
+            sc.append({'path': f, 'name': info_.get('name') or os.path.basename(f),
+                       'desc': info_.get('description') or '', 'duration': info_.get('duration'),
+                       'user': not f.startswith(bundled), 'sel': be.regress_sel.get(f, True)})
+        out['scenarios'] = sc
+        rr = be.regress
+        if rr is not None:
+            done = sum(r_[1] in ('PASS', 'FAIL') for r_ in rr.rows)
+            errs = [ln for ln in rr.lines if 'Error' in ln or 'Traceback' in ln]
+            out['regress'] = {'running': rr.running, 'done': done, 'total': len(rr.files),
+                              'elapsed': round(time.time() - rr.t0), 'rows': [list(r_) for r_ in rr.rows],
+                              'npass': sum(r_[1] == 'PASS' for r_ in rr.rows), 'code': rr.code,
+                              'report': rr.report, 'out': rr.out, 'err': errs[-1][:200] if errs else ''}
+    return out
 
 
 def info(be):

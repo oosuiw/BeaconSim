@@ -31,6 +31,9 @@ from .common import (CACHE_DIR, ROOT, T_CAMLINK_OPTICAL, apply_to_sim_config, ha
                      sensor_mounts)
 from .engine import EngineThread, SimEngine
 from .environment import EnvParams
+from .evaluate import subscribe_eval
+from .modes import CondMixin, default_test
+from .session import RegressRun, TestSession, save_regression
 from .godot_link import C, CameraModel, export_scene, godot_bin, project_dir, to_g, xform_g
 from .roadgen import RoadParams, generate
 from .ros_link import RosLink
@@ -70,8 +73,8 @@ def _pick(cls, d):
     return cls(**{k: v for k, v in d.items() if k in names})
 
 
-class Backend:
-    """UI 와 무관한 시뮬레이션 제어 (설정, 맵·시나리오 생성, 엔진 스레드, ROS)."""
+class Backend(CondMixin):
+    """UI 와 무관한 시뮬레이션 제어 (설정, 모드·시험·회귀, 맵·시나리오 생성, 엔진 스레드, ROS)."""
 
     def __init__(self, ros=True, log=None):
         self.log_lines = collections.deque(maxlen=400)
@@ -89,6 +92,20 @@ class Backend:
         self.key_speed, self.key_yaw = 1.5, 0.6
         self.view = dict(ui_schema.VIEW_DEFAULT)
         self.export_future = None
+        # 모드: None = 시작 화면, 'dev' | 'test' | 'regress' (ImGui 앱과 같은 의미)
+        self.mode, self.prev_mode = None, None
+        self.mode_sel = 'dev'
+        self.test = default_test()
+        self.gnss_override = {}
+        self.applied = None                  # 실행 중 조건 (변경 감지용)
+        self.session = None                  # 시험 세션
+        self.test_result, self.result_new = None, False
+        self.regress, self.regress_sel, self.regress_ros = None, {}, False
+        self.robot_future = None
+        self.last_drive = 0.0
+        self.was_paused = False
+        self.changed = True                  # 모드 화면 상태를 다시 보내야 함
+        self.hold, self.hold_t = False, 0.0  # 새 장면을 화면이 불러오는 중이면 엔진 대기
         self._load_settings()
         if self.params.seed < 0:
             self.params.seed = 1
@@ -118,6 +135,10 @@ class Backend:
                 setattr(self, attr, _pick(cls, d[key]))
         self.rand_map, self.rand_scn = d.get('rand_map', False), d.get('rand_scn', True)
         self.export_dir = d.get('export_dir', self.export_dir)
+        if d.get('mode') in ('dev', 'test', 'regress'):
+            self.mode_sel = d['mode']
+        if isinstance(d.get('test'), dict):
+            self.test = dict(default_test(), **d['test'])
         try:
             with open(GODOT_UI) as f:
                 g = json.load(f)
@@ -137,7 +158,8 @@ class Backend:
         except Exception:     # noqa: BLE001
             d = {}
         d.update(params=self.params.to_dict(), scenario=self.sparams.to_dict(), traffic=self.tparams.to_dict(),
-                 env=self.eparams.to_dict(), rand_map=self.rand_map, rand_scn=self.rand_scn, export_dir=self.export_dir)
+                 env=self.eparams.to_dict(), rand_map=self.rand_map, rand_scn=self.rand_scn, export_dir=self.export_dir,
+                 mode=self.mode_sel, test=self.test)
         os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
         with open(SETTINGS, 'w') as f:
             json.dump(d, f, indent=1)
@@ -196,6 +218,10 @@ class Backend:
         cfg = copy.deepcopy(self.base_cfg)
         cfg.update(map=self.params.to_dict(), scenario=self.sparams.to_dict(), traffic=self.tparams.to_dict(),
                    environment=self.eparams.to_dict())
+        if self.gnss_override:
+            cfg['gnss'].update(self.gnss_override)
+            cfg['gnss_override'] = dict(self.gnss_override)
+        cfg['faults'] = copy.deepcopy(self.test.get('faults') or []) if self.mode == 'test' else []
         return cfg
 
     def _build_job(self, cfg, map_too, model, parts):
@@ -217,9 +243,13 @@ class Backend:
         if self.rand_scn:
             self.sparams.seed = int(rng.integers(0, 2 ** 31 - 1))
         self.save_settings()
+        if self.session is not None and not self.session.done:
+            self.finish_test('재시작', show=False)
         if self.eth is not None:
             self.eth.stop()
             self.eth = None
+        self.applied = self._cond()
+        self.changed = True
         cfg = self._make_cfg()
         self.log(('맵·' if map_too else '') + f'시나리오 생성 중... (맵 시드 {self.params.seed}, 시나리오 시드 {self.sparams.seed})')
         self.build_future = self.pool.submit(self._build_job, cfg, map_too or self.model is None, self.model, self.parts)
@@ -241,9 +271,23 @@ class Backend:
             self.engine.close()
         self.model, self.parts, self.engine, self.origin = model, parts, eng, origin
         self.world_seq += 1
-        on_step = self.ros.attach(eng, cfg) if self.ros is not None else None
+        ros_step = self.ros.attach(eng, cfg) if self.ros is not None else None
+        self.session = None
+        if self.mode == 'test':
+            self.session = TestSession(eng, self.test, log=self.log)
+            if self.ros is not None and self.ros.ok and self.test.get('topics'):
+                self.session.subs = subscribe_eval(self.ros.node, self.session.met, eng, self.test['topics'])
+            d = self.session.duration
+            self.log(f'시험 시작: {self.test.get("name")} ({"제한 없음" if not d else f"{d:.0f} s"}, '
+                     f'기준 {len(self.test.get("criteria") or {})}개)')
+        steps = [f for f in (ros_step, self.session.on_step if self.session else None) if f is not None]
+        on_step = (lambda e, f, ev: [st(e, f, ev) for st in steps]) if steps else None
+        self.changed = True
         self.eth = EngineThread(eng, self.rtf, on_step)
-        self.eth.paused = self.paused
+        self.hold, self.hold_t = True, time.time()      # 화면이 장면을 불러올 때까지 대기
+        self.eth.paused = True
+        if self.session is not None and self.session.duration:
+            self.eth.stop_at = self.session.duration     # 시험 시간에 엔진이 정확히 멈춤
         self.eth.start()
         sm, ms = eng.scn.summary(), model.summary()
         self.log(f'맵 시드 {ms["seed"]} ({ms["length_m"]:.0f} m, {ms["lanes"]}차로, 터널 {len(ms["tunnels"])}) | '
@@ -254,14 +298,133 @@ class Backend:
     def set_pause(self, p):
         self.paused = bool(p)
         if self.eth is not None:
-            self.eth.paused = self.paused
+            self.eth.paused = self.paused or self.hold
+
+    def release_hold(self):
+        """화면(Godot)이 새 장면을 다 불러옴 → 엔진 출발 (시험은 화면에 보이는 순간 t=0 부터)."""
+        if self.hold:
+            self.hold = False
+            if self.eth is not None:
+                self.eth.paused = self.paused
 
     def set_rtf(self, r):
         self.rtf = float(r)
         if self.eth is not None:
             self.eth.set_rtf(self.rtf)
+        if self.session is not None and not self.session.done:
+            self.session.rtf_changed(self.rtf)
+
+    # ---- 모드 (시작 화면 → 개발/시험, 회귀)
+    def start_mode(self, mode):
+        if self.robot_cfg is None:
+            return
+        if self.session is not None and not self.session.done:
+            self.finish_test('모드 변경', show=False)
+        prev = self.mode or self.prev_mode
+        self.mode = self.mode_sel = mode
+        self.prev_mode = None
+        self.changed = True
+        self.save_settings()
+        if mode == 'regress':
+            return
+        if prev != mode or self.applied is None or bool(self._changes()) or self.engine is None:
+            self.paused = False
+            map_too = self.model is None or self.applied is None or self.applied['map'] != self._cond()['map']
+            self.rebuild(map_too=map_too)
+        else:
+            self.set_pause(self.was_paused)
+
+    def go_home(self):
+        if self.mode is None:
+            return
+        self.prev_mode, self.was_paused = self.mode, self.paused
+        self.mode = None
+        self.changed = True
+        if self.eth is not None:
+            self.eth.paused = True
+
+    def go_back(self):
+        if self.prev_mode is None:
+            return
+        self.mode, self.prev_mode = self.prev_mode, None
+        self.changed = True
+        self.set_pause(self.was_paused)
+
+    def restart(self, map_too=False):
+        """R/G/적용/다시 시험: 맵 조건이 바뀌었으면 맵도 다시. 시험 중이면 결과를 저장하고 새 시험."""
+        if self.mode not in ('dev', 'test'):
+            return
+        if self.applied is not None and self.applied['map'] != self._cond()['map']:
+            map_too = True
+        self.paused = False
+        self.rebuild(map_too=map_too)
+
+    def finish_test(self, reason, show=True):
+        s = self.session
+        if s is None or s.done:
+            return
+        res = s.finish(reason)
+        if self.ros is not None and self.ros.ok:
+            for sub in s.subs:
+                try:
+                    self.ros.node.destroy_subscription(sub)
+                except Exception:   # noqa: BLE001
+                    pass
+        s.subs = []
+        self.test_result = res
+        self.result_new = show
+        self.changed = True
+
+    def regress_start(self):
+        from .session import list_scenarios
+        sel = [f for f in list_scenarios() if self.regress_sel.get(f, True)]
+        if not sel or (self.regress is not None and self.regress.running):
+            return
+        if self.eth is not None:                      # 화면 엔진 정지 (GPU·토픽 충돌 방지)
+            self.set_pause(True)
+        self.regress = RegressRun(sel, ros=self.regress_ros and self.ros is not None and self.ros.ok, log=self.log)
+        self.log(f'회귀 테스트 시작: {len(sel)}개 → {self.regress.out}')
+        self.changed = True
+
+    def build_robot(self, path):
+        if self.robot_future is not None and not self.robot_future.done():
+            return
+        from .common import writable_root
+        from .robot_build import build
+        self.log(f'로봇 모델 생성 중: {path}')
+        self.robot_future = self.pool.submit(build, path, writable_root(), True, self.log)
+        self.changed = True
+
+    def tick(self, snap_t):
+        """메인 루프마다: 로봇 모델 생성 완료, 시험 시간 종료, 수동 개입(방향키) 구간 기록."""
+        f = self.robot_future
+        if f is not None and f.done():
+            self.robot_future = None
+            try:
+                f.result()
+                self.robot_cfg = load_yaml('config/robot.yaml')
+                _, T_bc = sensor_mounts(self.robot_cfg)['camera']
+                self.T_b_opt = T_bc @ T_CAMLINK_OPTICAL
+                self.log('로봇 모델 준비 완료 → 모드를 고르고 시작하세요')
+            except Exception as ex:     # noqa: BLE001
+                self.log(f'로봇 모델 생성 실패: {ex}')
+            self.changed = True
+        if self.hold and time.time() - self.hold_t > 60.0:   # 화면 응답이 없어도 1분 뒤엔 출발
+            self.release_hold()
+        s = self.session
+        if s is None or s.done:
+            return
+        if s.duration and snap_t is not None and snap_t >= s.duration - 1e-6:
+            self.finish_test('시험 시간 종료')
+            self.set_pause(True)
+            return
+        s.keyboard(time.time() - self.last_drive < 0.25 and not self.paused)
 
     def close(self):
+        if self.session is not None and not self.session.done:
+            self.finish_test('앱 종료', show=False)
+        if self.regress is not None:
+            self.regress.stop()
         if self.eth is not None:
             self.eth.stop()
         if self.engine is not None:
@@ -276,8 +439,9 @@ class Server:
 
     STATE_HZ = 60.0
 
-    def __init__(self, be: Backend, window=(1700, 1000), extra=()):
+    def __init__(self, be: Backend, window=(1700, 1000), extra=(), start_mode=None):
         self.be = be
+        self.start_mode = start_mode
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('127.0.0.1', 0))
@@ -290,6 +454,9 @@ class Server:
         self.last_pc_t = {}
         self.cam_seq, self.cam_next_t, self.cam_pending = 0, 0.0, None
         self.settings_dirty = 0.0
+        self.txq = collections.deque()
+        self.ui_key = None
+        self.mode_t = 0.0
         self.godot_fps = 0.0
         self.cam_stats = {'req': 0, 'done': 0, 'drop': 0, 'rt': [], 'pub': []}
         self.export_was_busy = False
@@ -300,13 +467,36 @@ class Server:
         self.proc = subprocess.Popen(cmd)
 
     # ---- 송수신
+    DROPPABLE = ('state', 'pc', 'radar')
+
     def send(self, msg, arrays=None):
+        """Godot 이 바빠서(장면 불러오기 등) 못 읽어도 백엔드가 막히지 않게: 보낼 데이터가 밀려 있으면
+        상태·점군은 버리고(다음 것이 곧 온다), 그 밖의 메시지는 큐에 쌓아 순서대로 보낸다."""
         if self.conn is None:
             return
-        try:
-            self.conn.sendall(pack(msg, arrays))
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            self.running = False
+        if self.txq and msg.get('type') in self.DROPPABLE:
+            return
+        self.txq.append(memoryview(pack(msg, arrays)))
+        self._flush()
+
+    def _flush_all(self):
+        while self.txq:
+            self.conn.sendall(self.txq.popleft())
+
+    def _flush(self):
+        while self.txq:
+            try:
+                n = self.conn.send(self.txq[0])
+            except BlockingIOError:
+                return
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                self.running = False
+                self.txq.clear()
+                return
+            if n < len(self.txq[0]):
+                self.txq[0] = self.txq[0][n:]
+                return
+            self.txq.popleft()
 
     def _recv(self):
         while True:
@@ -315,6 +505,8 @@ class Server:
                 break
             try:
                 data = self.conn.recv(1 << 20)
+            except BlockingIOError:
+                break
             except (ConnectionResetError, OSError):
                 data = b''
             if not data:
@@ -338,27 +530,23 @@ class Server:
         elif t == 'rtf':
             be.set_rtf(m['value'])
         elif t == 'restart':
-            be.rebuild(map_too=bool(m.get('map', False)))
-        elif t == 'drive' and be.engine is not None:
+            be.restart(map_too=bool(m.get('map', False)))
+        elif t == 'drive' and be.engine is not None and be.mode in ('dev', 'test'):
             be.engine.set_cmd('key', float(m['v']) * be.key_speed, float(m['w']) * be.key_yaw)
+            be.last_drive = time.time()
         elif t == 'set':
-            if ui_schema.set_value(be, m['k'], m['v']):
-                self.send({'type': 'ui', 'tabs': ui_schema.tabs(be)})
+            ui_schema.set_value(be, m['k'], m['v'])
             self.settings_dirty = time.time()
+            be.changed = True
             self.send_values()
         elif t == 'action':
-            a = m.get('name')
-            if a == 'restart':
-                be.rebuild()
-            elif a == 'regen_map':
-                be.rebuild(map_too=True)
-            elif a == 'export':
-                be.export_async()
-            elif a == 'apply_sim_yaml':
-                be.apply_sim_yaml()
+            self.action(m.get('name'), m.get('arg'))
+            be.changed = True
             self.send_values()
         elif t == 'cam_done':
             self._on_cam_done(m)
+        elif t == 'world_ready' and int(m.get('seq', -1)) == be.world_seq:
+            be.release_hold()
         elif t == 'perf':
             self.godot_fps = float(m.get('fps', 0))
             if os.environ.get('BEACONSIM_PERF'):
@@ -367,6 +555,101 @@ class Server:
                       {k: round(v, 1) for k, v in be.engine.take_stats().items()} if be.engine else {},
                       f"cam req {cs['req']} done {cs['done']} timeout {cs['drop']} "
                       f"rt {1000 * np.mean(cs['rt'] or [0]):.0f}ms pub {1000 * np.mean(cs['pub'] or [0]):.0f}ms", flush=True)
+
+    def action(self, a, arg=None):
+        """사이드바·시작 화면·결과 창 버튼."""
+        be = self.be
+        if a == 'restart':
+            be.restart()
+        elif a == 'regen_map':
+            be.restart(map_too=True)
+        elif a == 'export':
+            be.export_async()
+        elif a == 'apply_sim_yaml':
+            be.apply_sim_yaml()
+        elif a == 'select_mode' and arg in ('dev', 'test', 'regress'):
+            if be.mode_sel != arg and arg in ('dev', 'test'):
+                be.tparams.enabled = arg == 'test'         # 개발 = 교통 끔, 시험 = 교통 켬 (기본)
+            be.mode_sel = arg
+        elif a == 'start':
+            be.start_mode(be.mode_sel)
+        elif a == 'home':
+            be.go_home()
+        elif a == 'back':
+            be.go_back()
+        elif a == 'preset' and arg is not None:
+            be._apply_preset(int(arg))
+        elif a == 'load_yaml' and arg:
+            try:
+                be.load_scenario_yaml(arg)
+            except Exception as e:      # noqa: BLE001
+                be.log(f'불러오기 실패: {e}')
+        elif a == 'defaults':
+            be._apply_overrides({}, reset=True)
+            be.test = default_test()
+            be.gnss_override = {}
+            be.tparams.enabled = be.mode_sel == 'test'
+        elif a == 'revert' and be.applied is not None:
+            be._revert()
+        elif a == 'finish_test':
+            be.finish_test('사용자 종료')
+            be.set_pause(True)
+        elif a == 'fault_add':
+            be.test.setdefault('faults', []).append({'sensor': 'gnss', 't0': 30.0, 't1': 40.0})
+        elif a == 'fault_del' and arg is not None:
+            f = be.test.get('faults') or []
+            if 0 <= int(arg) < len(f):
+                f.pop(int(arg))
+        elif a == 'save_regression' and be.test_result is not None:
+            try:
+                p = save_regression(be.test_result['scenario'])
+                be.log(f'회귀 시나리오 저장: {p}')
+                if be.test_result['metrics'].get('interventions'):
+                    be.log('주의: 수동 개입(키보드)은 회귀 실행에서 재현되지 않습니다 (/cmd_vel 상위 제어기 필요)')
+            except Exception as e:      # noqa: BLE001
+                be.log(f'저장 실패: {e}')
+        elif a == 'open' and arg:
+            self._open_path(arg)
+        elif a == 'open_scenarios':
+            from .session import scenario_dirs
+            d = scenario_dirs()
+            if d:
+                self._open_path(d[-1])
+        elif a == 'regress_toggle' and arg:
+            be.regress_sel[arg] = not be.regress_sel.get(arg, True)
+        elif a in ('regress_all', 'regress_none'):
+            from .session import list_scenarios
+            for f in list_scenarios():
+                be.regress_sel[f] = a == 'regress_all'
+        elif a == 'regress_run':
+            be.regress_start()
+        elif a == 'regress_stop' and be.regress is not None:
+            be.regress.stop()
+        elif a == 'build_robot' and arg:
+            be.build_robot(arg)
+        be.save_settings()
+
+    def _open_path(self, p):
+        try:
+            subprocess.Popen(['xdg-open', p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:          # noqa: BLE001
+            self.be.log(f'열기 실패: {e} ({p})')
+
+    def send_ui_if_changed(self):
+        """탭 정의가 달라졌으면 다시 보냄 (모드, 시작 화면 모드 선택, 차로 수, 고장 주입 개수)."""
+        be = self.be
+        key = (be.mode, be.mode_sel, be.params.lanes, len(be.test.get('faults') or []))
+        if key != self.ui_key:
+            self.ui_key = key
+            self.send({'type': 'ui', 'tabs': ui_schema.tabs(be, be.mode),
+                       'start_tabs': ui_schema.tabs(be, be.mode_sel, start=True)})
+
+    def send_mode(self, force=False):
+        be = self.be
+        if force or be.changed or time.time() - self.mode_t > 0.5:
+            be.changed = False
+            self.mode_t = time.time()
+            self.send(ui_schema.mode_state(be))
 
     # ---- 월드 / 상태
     def send_world(self, js, origin, lane):
@@ -529,6 +812,7 @@ class Server:
         except socket.timeout:
             raise RuntimeError('Godot 클라이언트가 연결하지 않음')
         self.conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.conn.setblocking(False)
         fonts = {w: os.path.join(ROOT, 'assets', 'fonts', f'Pretendard-{w}.otf') for w in ('Medium', 'SemiBold', 'Bold')}
         try:
             from .ui_style import _ui_font
@@ -541,12 +825,16 @@ class Server:
                               'wr': self.be.cam.Wr, 'hr': self.be.cam.Hr,
                               'vfov': float(np.degrees(2 * np.arctan(self.be.cam.Hr / 2.0 / self.be.cam.K[1, 1]))),
                               'rate_hz': self.be.base_cfg['camera']['rate_hz']}})
-        self.send({'type': 'ui', 'tabs': ui_schema.tabs(self.be)})
+        self.send_ui_if_changed()
         self.send_values()
-        self.be.rebuild(map_too=True)
+        if self.start_mode in ('dev', 'test', 'regress') and self.be.robot_cfg is not None:
+            self.be.mode_sel = self.start_mode
+            self.be.start_mode(self.start_mode)
+        self.send_mode(force=True)
         period = 1.0 / self.STATE_HZ
         nxt = time.perf_counter()
         while self.running and self.proc.poll() is None:
+            self._flush()
             self._recv()
             w = self.be.poll_build()
             if w is not None:
@@ -563,6 +851,9 @@ class Server:
                 self.send_values()
             if self.be.engine is not None and self.be.build_future is None:
                 self.send_state()
+            self.be.tick(self.be.engine.t if self.be.engine is not None and self.be.build_future is None else None)
+            self.send_ui_if_changed()
+            self.send_mode()
             self.send_logs()
             nxt += period
             time.sleep(max(0.0, nxt - time.perf_counter()))
@@ -575,6 +866,8 @@ class Server:
             self.be.save_settings()
         try:
             if self.conn is not None:
+                self.conn.settimeout(1.0)
+                self._flush_all()
                 self.conn.sendall(pack({'type': 'bye'}))
         except OSError:
             pass
@@ -596,6 +889,9 @@ class Server:
 def main():
     ap = argparse.ArgumentParser(description='BeaconSim (Godot 프런트엔드)')
     ap.add_argument('--no-ros', action='store_true')
+    ap.add_argument('--mode', choices=['dev', 'test', 'regress'], default=None, help='시작 화면 없이 바로 이 모드로')
+    ap.add_argument('--scenario', default=None, help='시나리오 YAML 불러오기 (조건·시험 설정)')
+    ap.add_argument('--robot-stl', default=None, help='로봇 모델이 없으면 이 비콘 CAD(STL)로 생성')
     ap.add_argument('--size', default='1700x1000')
     ap.add_argument('--set', action='append', default=[], help='예: env.weather=rain')
     ap.add_argument('--shot', default=None, help='테스트용: 장면 로드 후 --shot-delay 초 뒤 화면 저장하고 종료')
@@ -605,8 +901,8 @@ def main():
     ap.add_argument('--selftest', default=None, help='테스트용: UI 자체 시험 (입력 주입) 후 결과 화면을 이 폴더에 저장하고 종료')
     a = ap.parse_args()
     be = Backend(ros=not a.no_ros)
-    if be.robot_cfg is None:
-        raise SystemExit('로봇 모델 없음: 먼저 기존 앱(run_app.sh)이나 build-robot 으로 생성하세요 (Godot UI 의 STL 선택은 3단계)')
+    if be.robot_cfg is None and a.robot_stl:
+        be.build_robot(a.robot_stl)
     for kv in a.set:
         k, v = kv.split('=', 1)
         grp, name = k.split('.')
@@ -623,7 +919,9 @@ def main():
         extra.append('--shot-help')
     if a.selftest:
         extra.append(f'--selftest={os.path.abspath(a.selftest)}')
-    srv = Server(be, (w, h), extra)
+    if a.scenario:
+        be.load_scenario_yaml(a.scenario)
+    srv = Server(be, (w, h), extra, start_mode=a.mode)
 
     def stop(*_):
         srv.running = False

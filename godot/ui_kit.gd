@@ -52,6 +52,26 @@ const I_CLOUD_SUN := 0xf6c4
 const I_RAIN := 0xf73d
 const I_SNOW := 0xf2dc
 const I_SMOG := 0xf75f
+const I_HOUSE := 0xf015
+const I_CLIPBOARD := 0xf46c
+const I_WRENCH := 0xf7d9
+const I_FLAG := 0xf11e
+const I_FILE := 0xf15c
+const I_STOP := 0xf04d
+const I_LOCK := 0xf023
+const I_PEN := 0xf304
+const I_UNDO := 0xf2ea
+const I_LIST_CHECK := 0xf0ae
+const I_ARROW_LEFT := 0xf060
+const I_IMPORT := 0xf56f
+const I_XCIRCLE := 0xf057
+const I_SPINNER := 0xf110
+const I_STOPWATCH := 0xf2f2
+const I_SLIDERS := 0xf1de
+const I_ROAD := 0xf018
+const I_CLOUD := 0xf743
+const I_CUBE := 0xf1b2
+const ICONS := {"road": I_ROAD, "burst": I_BURST, "car": I_CAR, "cloud": I_CLOUD, "stopwatch": I_STOPWATCH}
 
 static func ic(code: int) -> String:
 	return String.chr(code)

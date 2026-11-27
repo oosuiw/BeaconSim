@@ -6,6 +6,8 @@ extends Node3D
 const BeaconWorld = preload("res://world.gd")
 const K = preload("res://ui_kit.gd")
 const Sidebar = preload("res://sidebar.gd")
+const StartScreen = preload("res://start.gd")
+const ResultDialog = preload("res://result_dialog.gd")
 
 const SENSOR_MASK := 1 | 2 | 8 | 16 | 32      # 센서 카메라: 오버레이(4) 빼고 전부
 const VIEW_KEYS := ["pandar", "tele", "radar", "radar_fov", "gnss", "camera", "labels", "vehicles", "scc", "robot",
@@ -77,6 +79,9 @@ var dash_panel: PanelContainer
 var legend_box: VBoxContainer
 var cam_panel: PanelContainer
 var help_layer: Control
+var start_ui: Control
+var result_dlg: Control
+var mode_msg := {}
 var shot_path := ""
 var shot_at := -1.0
 var perf_t := 0.0
@@ -187,11 +192,16 @@ func _handle(m: Dictionary, bin: PackedByteArray) -> void:
 			_load_fonts(m["fonts"], m["icons"])
 			_setup_sensor_camera(m["camera"])
 			sidebar.set_version(str(m["version"]))
+			start_ui.set_version(str(m["version"]))
 		"ui":
 			sidebar.set_tabs(m["tabs"])
+			start_ui.set_tabs(m["start_tabs"])
 		"values":
 			sidebar.set_values(m["values"])
+			start_ui.set_values(m["values"])
 			_apply_view()
+		"mode":
+			_on_mode(m)
 		"info":
 			sidebar.set_info(m["info"])
 		"world":
@@ -203,6 +213,7 @@ func _handle(m: Dictionary, bin: PackedByteArray) -> void:
 		"log":
 			for ln in m["lines"]:
 				sidebar.add_log(ln)
+			start_ui.set_logs(sidebar.feed_lines)
 		"cam_req":
 			_capture_for_ros(m)
 		"bye":
@@ -217,6 +228,7 @@ func _on_edit(k: String, v: Variant) -> void:
 		k = "view.ui_zoom"
 		v = snappedf(cur, 0.05)
 	sidebar.set_widget(k, v)
+	start_ui.form.set_widget(k, v)
 	if k == "view.follow":
 		follow = bool(v)
 		return
@@ -224,11 +236,28 @@ func _on_edit(k: String, v: Variant) -> void:
 	if k.begins_with("view."):
 		_apply_view()
 
-func _on_action(name: String) -> void:
-	if name.begins_with("preset:"):
-		_preset(name.trim_prefix("preset:"))
+func _on_action(name: String, arg: Variant = null) -> void:
+	if name == "cam":
+		_preset(str(arg))
 		return
-	_send({"type": "action", "name": name})
+	if name == "show_result":
+		if typeof(mode_msg.get("result")) == TYPE_DICTIONARY:
+			result_dlg.show_result(mode_msg["result"])
+		return
+	_send({"type": "action", "name": name, "arg": arg})
+
+## 모드 상태: 시작 화면 ↔ 개발/시험 화면, 시험 카드, 변경 배너, 결과 창
+func _on_mode(m: Dictionary) -> void:
+	mode_msg = m
+	var home: bool = m.get("mode") == null or m.get("mode") == "regress"
+	start_ui.visible = home
+	sidebar.set_mode(m)
+	start_ui.set_mode(m)
+	if m.get("building", false) and not home:
+		loading.visible = true
+		loading.text = "맵·시나리오 생성 중..."
+	if m.get("result_new", false) and typeof(m.get("result")) == TYPE_DICTIONARY:
+		result_dlg.show_result(m["result"])
 
 ## 화면 표시 값(view.*)을 3D·UI 에 반영
 func _apply_view() -> void:
@@ -263,6 +292,8 @@ func _on_world(m: Dictionary, bin: PackedByteArray) -> void:
 	add_child(world)
 	world.build(m["scene"])
 	world_seq = int(m["seq"])
+	await get_tree().process_frame
+	_send({"type": "world_ready", "seq": world_seq})        # 백엔드: 이제 엔진 출발
 	world_msg = m
 	veh_dims = m["veh_dims"]
 	rain_main = world.make_weather()
@@ -622,6 +653,10 @@ func _set_follow(on: bool) -> void:
 func _unhandled_input(ev: InputEvent) -> void:
 	if ev is InputEventMouseButton and ev.pressed:
 		get_viewport().gui_release_focus()
+	if start_ui.visible or result_dlg.visible:
+		if result_dlg.visible and ev is InputEventKey and ev.pressed and (ev as InputEventKey).physical_keycode == KEY_ESCAPE:
+			result_dlg.visible = false
+		return
 	if help_layer.visible:
 		if ev is InputEventKey and ev.pressed and (ev as InputEventKey).physical_keycode in [KEY_ESCAPE, KEY_F1]:
 			help_layer.visible = false
@@ -666,7 +701,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 
 ## 방향키: 단위 명령(-1~1)을 보내고 백엔드가 방향키 속도·회전 설정을 곱한다
 func _drive(dt: float) -> void:
-	if get_viewport().gui_get_focus_owner() != null or help_layer.visible:
+	if get_viewport().gui_get_focus_owner() != null or help_layer.visible or start_ui.visible or result_dlg.visible:
 		return
 	var v := 0.0
 	var w := 0.0
@@ -721,7 +756,7 @@ func _process(dt: float) -> void:
 	scc_mesh.visible = show["scc"]
 	scc_lines.visible = show["scc"]
 	# 카메라 패널: 카메라 주기(실시간 기준)마다 한 번 렌더
-	cam_panel.visible = show["camera"] and sensor_sv != null and world != null
+	cam_panel.visible = show["camera"] and sensor_sv != null and world != null and not start_ui.visible
 	if cam_panel.visible and not cam_busy:
 		cam_next -= dt
 		if cam_next <= 0.0:
@@ -774,6 +809,8 @@ func _load_fonts(fonts: Dictionary, icons: String) -> void:
 		if dash[k] is Label and dash[k].get_meta("big", false):
 			dash[k].add_theme_font_override("font", font_bold)
 	sidebar.set_fonts(font_bold)
+	start_ui.set_fonts(font_bold)
+	result_dlg.font_bold = font_bold
 	_apply_bold(help_layer)
 
 func _apply_bold(n: Node) -> void:
@@ -800,6 +837,13 @@ func _build_ui() -> void:
 	loading = K.label("백엔드 연결 중...", K.MUTED, 22)
 	ui.add_child(loading)
 	_build_help()
+	start_ui = StartScreen.new()
+	start_ui.edited.connect(_on_edit)
+	start_ui.action.connect(_on_action)
+	ui.add_child(start_ui)
+	result_dlg = ResultDialog.new()
+	result_dlg.action.connect(_on_action)
+	ui.add_child(result_dlg)
 
 func _build_playbar() -> void:
 	playbar = PanelContainer.new()
@@ -979,6 +1023,7 @@ func _build_help() -> void:
 	v.add_child(b)
 
 func _update_ui() -> void:
+	sidebar.set_time(float(st["t"]))
 	var paused: bool = st.get("paused", false)
 	btn_pause.text = K.ic(K.I_PLAY if paused else K.I_PAUSE)
 	for b in speed_btns:

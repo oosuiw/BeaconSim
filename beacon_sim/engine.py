@@ -383,6 +383,7 @@ class EngineThread(threading.Thread):
         self.wall_t0 = None
         self.sim_t0 = 0.0
         self.measured_rtf = 0.0
+        self.stop_at = None           # 이 시뮬레이션 시각이 되면 스스로 일시정지 (시험 시간)
 
     def run(self):
         e = self.engine
@@ -400,6 +401,9 @@ class EngineThread(threading.Thread):
                 continue
             if now - target > 0.5:                     # 너무 밀리면 기준 재설정 (실시간 불가)
                 self.wall_t0, self.sim_t0 = now, e.t
+            if self.stop_at is not None and e.t >= self.stop_at - 1e-9:
+                self.paused = True
+                continue
             fired, ev = e.step()
             if self.on_step is not None:
                 try:

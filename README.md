@@ -213,5 +213,11 @@ Copyright (c) 2026 BeaconSim authors. All rights reserved. (LICENSE 참고)
   탭 항목은 파이썬(`beacon_sim/ui_schema.py`)이 정의하고 Godot(`godot/sidebar.gd`)이 그린다 → 항목 추가는 파이썬만 고치면 된다.
   생성 조건·저장 위치는 기존 앱과 같은 `~/.config/beaconsim/app.json`, 화면 표시·방향키 설정은 `godot_ui.json`
 - UI 자체 시험: `./run_godot.sh --no-ros --selftest results/ui_selftest` (가상 마우스·키 입력으로 탭·체크박스·슬라이더·단축키를 눌러 보고 화면 저장)
-- 다음: 3단계 시작 화면·시험·회귀, 4단계 AppImage 전환
+- 3단계(완료): 시작 화면(개발/시험/회귀 카드, 프리셋·YAML 불러오기·기본값, 조건 탭, 요약, 최근 결과), 시험 모드
+  (사이드바 진행 카드·수동 개입 수·시험 종료, 조건 잠금 배너 → "이 조건으로 재시작"/되돌리기, 시험 설정 탭: 판정 기준·고장 주입·평가 토픽),
+  결과 창(기준 표·결과 폴더·회귀 시나리오로 저장·다시 시험), 회귀 실행(시나리오 선택·ROS 연동·진행·report.md), 첫 실행 STL 선택.
+  화면·시험 로직 중 UI 와 무관한 부분은 `beacon_sim/modes.py` 로 빼서 기존 앱과 같이 쓴다.
+  새 장면을 화면이 다 불러온 뒤에 엔진이 출발하고(시험은 보이는 순간 t=0), 시험 시간에는 엔진이 정확히 멈춘다.
+- 명령행: `./run_godot.sh --mode test --scenario scenarios/S01_open_clear.yaml` (시작 화면 없이 바로), `--robot-stl <CAD.stl>`
+- 다음: 4단계 AppImage 전환
 - 그동안 기존 GUI(`run_app.sh`)는 그대로 사용 가능
