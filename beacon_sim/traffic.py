@@ -262,6 +262,8 @@ class TrafficSim:
         self.los_fn = None                      # (eyes (K,3), target (3,)) → 보임 여부 (K,) — 엔진이 RGL로 제공
         self.notice_at = {}                     # 차량 → 인지 시 비콘까지 거리 (평가용)
         self._pose_cache = None
+        self._rev = 0                         # 상태가 바뀔 때마다 증가 → poses_at 캐시 무효화
+        self._pa_cache = (None, None)
         self.beacon_vu = 0.0                    # 교통 흐름 방향 속도 (+ = 사고 현장 쪽으로 후진)
         if tp.enabled:
             self._prefill()
@@ -286,6 +288,7 @@ class TrafficSim:
         return self.m.lane_center_t(lane, side)
 
     def _activate(self, side, lane, u, v=None):
+        self._rev += 1
         free = np.nonzero(~self.active)[0]
         if len(free) == 0:
             return None
@@ -352,6 +355,13 @@ class TrafficSim:
 
     # ---- 한 스텝
     def step(self, beacon_s=None, beacon_t=None):
+        self._rev += 1
+        try:
+            self._step(beacon_s, beacon_t)
+        finally:
+            self._rev += 1
+
+    def _step(self, beacon_s=None, beacon_t=None):
         dt = self.DT
         if beacon_s is not None:                 # 실제 로봇 위치 (상위 제어기가 움직임)
             u_new = self.scn.dir * beacon_s
@@ -577,6 +587,16 @@ class TrafficSim:
     def poses_at(self, t_query=None):
         """(N,4,4) 포즈 (비활성은 지하로 숨김), 속도 벡터 (N,3). t_query로 등속 외삽."""
         dtq = 0.0 if t_query is None else float(t_query - self.t)
+        key = (self._rev, self.t, dtq)
+        if self._pa_cache[0] == key:
+            return self._pa_cache[1]
+        out = self._poses_at(dtq)
+        for a in out:
+            a.flags.writeable = False             # 캐시 공유본: 호출자가 고치면 바로 오류가 나게
+        self._pa_cache = (key, out)
+        return out
+
+    def _poses_at(self, dtq):
         N = self.N
         T = np.tile(np.eye(4), (N, 1, 1))
         T[:, 2, 3] = HIDDEN_Z

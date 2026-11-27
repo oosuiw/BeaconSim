@@ -156,9 +156,17 @@ def load_livox_pattern(csv_path):
     import hashlib
     from .common import CACHE_DIR
     os.makedirs(CACHE_DIR, exist_ok=True)
-    tag = hashlib.md5(os.path.abspath(csv_path).encode()).hexdigest()[:8]
+    st = os.stat(csv_path)
+    tag = hashlib.md5(f'{st.st_size}:{int(st.st_mtime)}'.encode()).hexdigest()[:8]
     cache = os.path.join(CACHE_DIR, f'{os.path.basename(csv_path)}.{tag}.npy')
-    if os.path.exists(cache) and os.path.getmtime(cache) >= os.path.getmtime(csv_path):
+    import glob
+    for old in glob.glob(os.path.join(CACHE_DIR, f'{os.path.basename(csv_path)}.*.npy')):
+        if old != cache:                                  # 예전 방식(경로 기준) 캐시 사본 정리
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+    if os.path.exists(cache):
         a = np.load(cache)
     else:
         a = np.loadtxt(csv_path, delimiter=',', skiprows=1, encoding='utf-8-sig')
@@ -201,6 +209,10 @@ class Tele15:
             t, self.az, self.el = rosette_pattern()
             self.pattern = '자체 로제트 패턴 (tele.csv 없음)'
         self.dt = float(np.median(np.diff(t)))     # 4.1667us (240k pts/s)
+        self.poses34 = np.empty((len(self.az), 3, 4), np.float32)          # 나눠서 계산 (임시 메모리 절약)
+        for k in range(0, len(self.az), 100000):
+            self.poses34[k:k + 100000] = rgl.ray_poses_from_angles(self.az[k:k + 100000], self.el[k:k + 100000])[:, :3, :4]
+        self.dirs = self.poses34[:, :, 2].astype(np.float64)
         self.n = int(round(1.0 / cfg['rate_hz'] / self.dt))
         self.cursor = 0
         self.graph = rgl.RaycastGraph(
@@ -215,9 +227,8 @@ class Tele15:
         i = (self.cursor + np.arange(self.n)) % len(self.az)
         self.cursor_used = self.cursor
         self.cursor = (self.cursor + self.n) % len(self.az)
-        az, el = self.az[i], self.el[i]
-        self.ray_dir = np.stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)], -1)
-        return rgl.ray_poses_from_angles(az, el)
+        self.ray_dir = self.dirs[i]
+        return self.poses34[i]
 
     def run(self, T_world_sensor, frame_start_ns, lin_vel=(0, 0, 0), ang_vel=(0, 0, 0)):
         self.graph.set_rays(self._rays(), [self.cfg['min_range'], self.cfg['max_range']])

@@ -99,6 +99,8 @@ class Backend:
         self.world_seq = 0
         self.cam = CameraModel(self.base_cfg['camera'])
         self.ros = RosLink(self.log) if ros else None
+        if self.ros is not None:
+            RosLink.check_buffers(self.log)
         if self.robot_cfg is not None:
             _, T_bc = sensor_mounts(self.robot_cfg)['camera']
             self.T_b_opt = T_bc @ T_CAMLINK_OPTICAL
@@ -288,6 +290,8 @@ class Server:
         self.last_pc_t = {}
         self.cam_seq, self.cam_next_t, self.cam_pending = 0, 0.0, None
         self.settings_dirty = 0.0
+        self.godot_fps = 0.0
+        self.cam_stats = {'req': 0, 'done': 0, 'drop': 0, 'rt': [], 'pub': []}
         self.export_was_busy = False
         shm = '/dev/shm' if os.path.isdir('/dev/shm') else CACHE_DIR
         self.cam_path = os.path.join(shm, f'beaconsim_view_{os.getpid()}.rgb')
@@ -355,6 +359,14 @@ class Server:
             self.send_values()
         elif t == 'cam_done':
             self._on_cam_done(m)
+        elif t == 'perf':
+            self.godot_fps = float(m.get('fps', 0))
+            if os.environ.get('BEACONSIM_PERF'):
+                cs, self.cam_stats = self.cam_stats, {'req': 0, 'done': 0, 'drop': 0, 'rt': [], 'pub': []}
+                print('PERF', f'fps {self.godot_fps:.0f} rtf {be.eth.measured_rtf if be.eth else 0:.2f}',
+                      {k: round(v, 1) for k, v in be.engine.take_stats().items()} if be.engine else {},
+                      f"cam req {cs['req']} done {cs['done']} timeout {cs['drop']} "
+                      f"rt {1000 * np.mean(cs['rt'] or [0]):.0f}ms pub {1000 * np.mean(cs['pub'] or [0]):.0f}ms", flush=True)
 
     # ---- 월드 / 상태
     def send_world(self, js, origin, lane):
@@ -472,16 +484,21 @@ class Server:
             return
         if self.cam_pending is not None and time.time() - self.cam_pending[1] > 2.0:
             self.cam_pending = None
+            self.cam_stats['drop'] += 1
         if self.cam_pending is None and snap['t'] >= self.cam_next_t:
             self.cam_seq += 1
             self.cam_pending = (self.cam_seq, time.time(), snap['t'])
             self.cam_next_t = snap['t'] + 1.0 / self.be.base_cfg['camera']['rate_hz']
             self.send({'type': 'cam_req', 'seq': self.cam_seq, 'path': self.cam_path})
+            self.cam_stats['req'] += 1
 
     def _on_cam_done(self, m):
         if self.cam_pending is None or m.get('seq') != self.cam_pending[0]:
             return
         t = self.cam_pending[2]
+        self.cam_stats['rt'].append(time.time() - self.cam_pending[1])
+        self.cam_stats['done'] += 1
+        t_pub = time.time()
         self.cam_pending = None
         w, h = int(m['w']), int(m['h'])
         raw = np.fromfile(self.cam_path, np.uint8)
@@ -489,6 +506,7 @@ class Server:
             return
         img = self.be.cam.distort(raw.reshape(h, w, 3))
         self.be.ros.publish_camera(img, t, self.be.cam, self.be.base_cfg['camera']['optical_frame'])
+        self.cam_stats['pub'].append(time.time() - t_pub)
 
     def send_values(self):
         self.send({'type': 'values', 'values': ui_schema.values(self.be)})

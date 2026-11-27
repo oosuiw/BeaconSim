@@ -65,6 +65,28 @@ def planar_T(x, y, yaw, z=0.0):
     return make_T((x, y, z), (0, 0, yaw))
 
 
+def quats_from_R(Rs):
+    """(N,3,3) 회전행렬 → (N,4) 쿼터니언 (x, y, z, w), 벡터화."""
+    Rs = np.asarray(Rs, np.float64)
+    m00, m11, m22 = Rs[:, 0, 0], Rs[:, 1, 1], Rs[:, 2, 2]
+    q = np.empty((len(Rs), 4))
+    tr = m00 + m11 + m22
+    c0 = tr > 0
+    c1 = ~c0 & (m00 > m11) & (m00 > m22)
+    c2 = ~c0 & ~c1 & (m11 > m22)
+    c3 = ~(c0 | c1 | c2)
+    R = Rs
+    s = np.sqrt(np.maximum(tr[c0] + 1.0, 1e-12)) * 2
+    q[c0] = np.c_[(R[c0, 2, 1] - R[c0, 1, 2]) / s, (R[c0, 0, 2] - R[c0, 2, 0]) / s, (R[c0, 1, 0] - R[c0, 0, 1]) / s, 0.25 * s]
+    s = np.sqrt(np.maximum(1.0 + m00[c1] - m11[c1] - m22[c1], 1e-12)) * 2
+    q[c1] = np.c_[0.25 * s, (R[c1, 0, 1] + R[c1, 1, 0]) / s, (R[c1, 0, 2] + R[c1, 2, 0]) / s, (R[c1, 2, 1] - R[c1, 1, 2]) / s]
+    s = np.sqrt(np.maximum(1.0 + m11[c2] - m00[c2] - m22[c2], 1e-12)) * 2
+    q[c2] = np.c_[(R[c2, 0, 1] + R[c2, 1, 0]) / s, 0.25 * s, (R[c2, 1, 2] + R[c2, 2, 1]) / s, (R[c2, 0, 2] - R[c2, 2, 0]) / s]
+    s = np.sqrt(np.maximum(1.0 + m22[c3] - m00[c3] - m11[c3], 1e-12)) * 2
+    q[c3] = np.c_[(R[c3, 0, 2] + R[c3, 2, 0]) / s, (R[c3, 1, 2] + R[c3, 2, 1]) / s, 0.25 * s, (R[c3, 1, 0] - R[c3, 0, 1]) / s]
+    return q
+
+
 def R_to_quat(R):
     """회전행렬 → (x, y, z, w)."""
     t = np.trace(R)

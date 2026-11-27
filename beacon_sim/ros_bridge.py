@@ -22,7 +22,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 import numpy as _np
 
-from .common import T_CAMLINK_OPTICAL, R_to_quat, make_T, sensor_mounts
+from .common import T_CAMLINK_OPTICAL, R_to_quat, make_T, quats_from_R, sensor_mounts
 from .gnss import FIX, FLOAT, NONE, SINGLE
 
 T0_NS = 1_000_000_000          # /clock 시작 오프셋 (0은 '미설정'으로 취급되는 노드가 있어 피함)
@@ -191,11 +191,11 @@ class RosBridge:
             Ts, _ = e.traffic.poses_at(e.t)
         pa = PoseArray()
         pa.header.frame_id, pa.header.stamp = self.map_frame, stamp
-        for T in Ts:
+        P, Q = Ts[:, :3, 3].tolist(), quats_from_R(Ts[:, :3, :3]).tolist()
+        for (x, y, z), (qx, qy, qz, qw) in zip(P, Q):
             p = Pose()
-            p.position.x, p.position.y, p.position.z = map(float, T[:3, 3])
-            q = R_to_quat(T[:3, :3])
-            p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = map(float, q)
+            p.position.x, p.position.y, p.position.z = x, y, z
+            p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = qx, qy, qz, qw
             pa.poses.append(p)
         self.pub['traffic'].publish(pa)
 

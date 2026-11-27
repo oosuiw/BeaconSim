@@ -170,6 +170,8 @@ class App(StartMixin):
         self.robot_future = None
         self.camera = CameraRenderer(self.ctx, self.base_cfg['camera'])
         self.ros = RosLink(self.log) if ros else None
+        if self.ros is not None:
+            RosLink.check_buffers(self.log)
         self.log(f'폰트: {self.font_path}')
         if has_robot_model():
             self._load_robot()

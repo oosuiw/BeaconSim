@@ -169,6 +169,15 @@ source /opt/ros/humble/setup.bash && .venv/bin/python tools/run_scenarios.py sce
 
 라벨 id: 1 road, 2 lane_white, 3 lane_yellow, 4 guardrail, 5 barrier, 6 terrain, 7 tunnel, 8 vehicle, 9 robot, 10 sign, 11 pole, 12 accident
 
+### 수신 쪽 영상·점군이 빠질 때 (DDS 버퍼)
+카메라 영상(약 7 MB)·Pandar 점군(약 1.8 MB)은 UDP 조각으로 나뉘어 전달된다. 받는 쪽 수신 버퍼(`net.core.rmem_max`/`rmem_default`)가
+작으면 넘쳐서 메시지가 통째로 버려진다 (시뮬레이터는 10 Hz 로 내보내는데 받는 쪽은 2~3 Hz). 한 번만 실행:
+```bash
+sudo tools/setup_ros_network.sh      # /etc/sysctl.d/99-beaconsim-ros.conf (재부팅 후에도 유지)
+```
+수신 주기 확인은 `ros2 topic hz` 대신 `python tools/topic_rates.py 10` (메시지를 풀지 않아 측정 도구가 병목이 되지 않음).
+버퍼가 작으면 앱 시작 시 이벤트 창에 경고가 나온다. 성능 로그: `BEACONSIM_PERF=1 ./run_godot.sh` (fps·RTF·센서 ms·카메라 왕복).
+
 ## 의존성
 
 - RGL v0.21.0 core 바이너리: `third_party/rgl/` (ROS 확장 없는 빌드. full 빌드의 ROS 라이브러리는 rclpy와 충돌 가능)

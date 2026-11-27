@@ -284,8 +284,14 @@ class SimEngine:
                     e.set_transform(self.T_wb)
                 with self.lock:
                     Ts, _ = self.traffic.poses_at(self.t)
-                for T, e in zip(Ts, self.npc_entities):
-                    e.set_transform(T)
+                # 움직인 차량만 RGL 에 보낸다 (비활성 차량은 지하에 그대로 → 매번 200대 호출하던 것 제거)
+                M = np.ascontiguousarray(Ts[:, :3, :4], dtype=np.float32)
+                last = getattr(self, '_npc_last', None)
+                changed = range(len(M)) if last is None or last.shape != M.shape else \
+                    np.nonzero((M != last).any(axis=(1, 2)))[0]
+                for i in changed:
+                    self.npc_entities[i].set_mat(M[i])
+                self._npc_last = M
                 for name in due:
                     self.next_fire[name] += self.period[name]
                     t0 = time.perf_counter()

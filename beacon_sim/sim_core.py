@@ -26,6 +26,8 @@ def main():
     cfg = load_yaml(args.config)
     eng = SimEngine(cfg, load_yaml(args.robot), log=log.info)
     bridge = RosBridge(node, eng, cfg, markers=args.markers, static_tf=not args.no_static_tf)
+    from .ros_link import RosLink
+    RosLink.check_buffers(lambda m: node.get_logger().warn(m))
     sm = eng.scn.summary()
     log.info(f'맵 시드 {eng.model.params.seed}, 시나리오 시드 {eng.scn.sp.seed} | {sm["side"]} {sm["lane"]}차로, '
              f'사고 s={sm["accident_s"]} m, 비콘 배치 s={sm["beacon_start_s"]} m (역방향, /cmd_vel 대기) | '

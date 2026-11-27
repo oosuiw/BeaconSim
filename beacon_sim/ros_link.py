@@ -48,6 +48,20 @@ class RosLink:
         except Exception:             # noqa: BLE001
             pass
 
+    @staticmethod
+    def check_buffers(log):
+        """UDP 수신 버퍼가 작으면 큰 메시지(카메라 영상·점군)가 받는 쪽에서 버려진다 → 경고."""
+        try:
+            with open('/proc/sys/net/core/rmem_max') as f:
+                rmax = int(f.read())
+            with open('/proc/sys/net/core/rmem_default') as f:
+                rdef = int(f.read())
+        except OSError:
+            return
+        if min(rmax, rdef) < 8 * 1024 * 1024:
+            log(f'ROS 수신 버퍼가 작음 (rmem_max {rmax // 1024} KB, rmem_default {rdef // 1024} KB) → '
+                f'카메라 영상·점군이 받는 쪽에서 버려질 수 있음. 한 번만: sudo tools/setup_ros_network.sh')
+
     def publish_camera(self, img, t, cam, frame):
         if not self.ok or self.bridge is None:
             return
@@ -57,7 +71,9 @@ class RosLink:
         msg.header.stamp, msg.header.frame_id = st, frame
         msg.height, msg.width, msg.encoding, msg.is_bigendian = img.shape[0], img.shape[1], 'rgb8', 0
         msg.step = img.shape[1] * 3
-        msg.data = array.array('B', img.tobytes())
+        data = array.array('B')
+        data.frombytes(memoryview(img).cast('B') if img.flags.c_contiguous else img.tobytes())
+        msg.data = data
         self.pub_img.publish(msg)
         info = self.CameraInfo()
         info.header = msg.header

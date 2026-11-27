@@ -79,12 +79,15 @@ var cam_panel: PanelContainer
 var help_layer: Control
 var shot_path := ""
 var shot_at := -1.0
+var perf_t := 0.0
 
 # ================================================================== 시작
 func start(a: Dictionary) -> void:
 	args = a
 	shot_path = args.get("shot", "")
 	DisplayServer.window_set_title("BeaconSim")
+	# 화면 갱신 상한: 제한이 없으면 Godot 이 GPU 를 다 써서 RGL(LiDAR·레이더 광선추적)이 느려진다
+	Engine.max_fps = int(args.get("max-fps", "60"))
 	get_window().min_size = Vector2i(1100, 700)
 	main_cam = Camera3D.new()
 	main_cam.fov = 50.0
@@ -686,6 +689,10 @@ func _toggle_pause() -> void:
 func _process(dt: float) -> void:
 	_net()
 	_drive(dt)
+	perf_t += dt
+	if perf_t > 2.0:
+		perf_t = 0.0
+		_send({"type": "perf", "fps": Engine.get_frames_per_second()})
 	_layout()
 	var y: float = orbit["yaw"]
 	var p: float = orbit["pitch"]

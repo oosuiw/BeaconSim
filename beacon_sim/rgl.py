@@ -149,6 +149,10 @@ class Entity:
         m = mat3x4(T)
         _check(_entity_set_transform(self.h, _ptr(m)))
 
+    def set_mat(self, m):
+        """이미 float32 3x4 (C 연속)인 변환을 그대로 전달."""
+        _check(_entity_set_transform(self.h, m.ctypes.data))
+
     def destroy(self):
         if self.h:
             _check(_entity_destroy(self.h))
@@ -195,7 +199,9 @@ class RaycastGraph:
 
     def set_rays(self, ray_poses, ranges):
         """ray_poses: (N,4,4) 센서 좌표계 ray 포즈(+Z가 ray 방향). ranges: (N,2) 또는 (2,)."""
-        m = np.ascontiguousarray(np.asarray(ray_poses)[:, :3, :4], dtype=np.float32)
+        m = ray_poses if (ray_poses.dtype == np.float32 and ray_poses.shape[1:] == (3, 4)
+                          and ray_poses.flags.c_contiguous) else \
+            np.ascontiguousarray(np.asarray(ray_poses)[:, :3, :4], dtype=np.float32)
         self.n_rays = len(m)
         _check(_rays_from_mat(C.byref(self.rays), _ptr(m), len(m)))
         r = np.ascontiguousarray(np.asarray(ranges, dtype=np.float32).reshape(-1, 2))
@@ -204,7 +210,10 @@ class RaycastGraph:
     def run(self, T_world_sensor, lin_vel=(0, 0, 0), ang_vel=(0, 0, 0)):
         T = np.asarray(T_world_sensor, dtype=np.float64)
         _check(_rays_transform(C.byref(self.tf_rays), _ptr(mat3x4(T))))
-        _check(_points_transform(C.byref(self.tf_points), _ptr(mat3x4(np.linalg.inv(T)))))
+        Ti = np.eye(4)                                   # 강체 역변환 (일반 역행렬보다 빠르고 정확)
+        Ti[:3, :3] = T[:3, :3].T
+        Ti[:3, 3] = -T[:3, :3].T @ T[:3, 3]
+        _check(_points_transform(C.byref(self.tf_points), _ptr(mat3x4(Ti))))
         lv = np.asarray(lin_vel, dtype=np.float32)
         av = np.asarray(ang_vel, dtype=np.float32)
         _check(_raytrace_velocity(self.trace, _ptr(lv), _ptr(av)))
