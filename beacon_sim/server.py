@@ -488,7 +488,9 @@ class Server:
         if self.cam_pending is None and snap['t'] >= self.cam_next_t:
             self.cam_seq += 1
             self.cam_pending = (self.cam_seq, time.time(), snap['t'])
-            self.cam_next_t = snap['t'] + 1.0 / self.be.base_cfg['camera']['rate_hz']
+            per = 1.0 / self.be.base_cfg['camera']['rate_hz']
+            # 정해진 격자(0.1 s 간격)에 맞춘다: '지금 + 주기'로 잡으면 왕복 시간만큼 매번 밀려 9 Hz 미만이 된다
+            self.cam_next_t = max(self.cam_next_t + per, snap['t'] - per / 2)
             self.send({'type': 'cam_req', 'seq': self.cam_seq, 'path': self.cam_path})
             self.cam_stats['req'] += 1
 
