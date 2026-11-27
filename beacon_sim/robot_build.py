@@ -373,9 +373,22 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
     lo, hi = bb(('asr_408', 'ars_408', 'ARS408'))
     c = (lo + hi) / 2
     radar = [lo[0], c[1], c[2]]                  # 레이돔 전면 중심
+    # 카메라 (Arducam B0495, 34 x 34 x 40.2 mm, 본체는 STEP 에 없음): 카메라 마운트 판의 고정 구멍 4개 중심에
+    # 렌즈가 전방(-X)을 보게 앉힌다 → camera_link = 렌즈 앞면 중심
+    from .step_import import find_holes
+    holes = [h for h in find_holes(up_path, '카메라 마운트', 1.0, 1.5) if abs(h[2][2]) > 0.9]   # 판에 수직인 M2.5 구멍
     lo, hi = bb(('카메라 마운트',))
-    c = (lo + hi) / 2
-    cam = [lo[0], c[1], lo[2] - 19.0]            # STEP 에 카메라 본체가 없음 → 마운트 앞끝 위 19mm (B0495 보드 38mm 의 절반)
+    if len(holes) >= 4:
+        hc = np.mean([h[1] for h in holes], 0)
+        plate_top = min(h[1][2] for h in holes) - 0.6        # 판 윗면 (-Z 가 위, 판 두께 1.2 mm)
+        cam = [hc[0] - 40.2 / 2, hc[1], plate_top - 34.0 / 2]
+        cam_note = (f'Arducam B0495(34x34x40.2mm)를 카메라 마운트 고정 구멍 {len(holes)}개 중심에 렌즈 전방으로 놓았을 때 '
+                    '렌즈 앞면 중심 (STEP 에 카메라 본체 없음)')
+    else:
+        c = (lo + hi) / 2
+        cam = [lo[0], c[1], lo[2] - 17.0]
+        cam_note = 'STEP 에 카메라 본체·고정 구멍 없음 → 카메라 마운트 앞끝 위로 추정. 실측으로 고칠 것'
+    print(f'카메라: 고정 구멍 {len(holes)}개, 렌즈 앞면(STEP mm) {np.round(cam, 1)}, 마운트 앞끝 x {lo[0]:.1f}')
     lo, hi = bb(('GNSS 안테나',))
     c = (lo + hi) / 2
     gnss = [c[0], c[1], lo[2]]                   # 안테나 윗면 중심
@@ -406,7 +419,7 @@ def build_step(up_path, down_path, out_root=None, force=False, log=print, deploy
         'pandar40p': '원통 축 중심, 하단면 +47.7mm (측정 중심). yaw(커넥터 방향)는 CAD 로 판별 불가 → 전방 가정',
         'tele15': '전면 창 중심. Livox 좌표 원점 정의(매뉴얼) 확인 필요',
         'ars408': '레이돔 전면 중심',
-        'camera': 'STEP 에 카메라 본체 없음 → 카메라 마운트 앞끝 위 19mm 로 추정. 실측으로 고칠 것',
+        'camera': cam_note,
         'gnss': 'ANN-MB 안테나 윗면 중심',
     }
     with open(cfg, 'w') as f:

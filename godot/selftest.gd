@@ -127,6 +127,9 @@ func run(client: Node, dir: String) -> void:
 	await _sleep(0.5)
 	_check("홈 버튼 → 시작 화면", c.start_ui.visible and c.start_ui.back_btn.visible)
 	await _click(c.start_ui.cards["test"])
+	var tw := Time.get_ticks_msec()
+	while c.mode_msg.get("mode_sel") != "test" and Time.get_ticks_msec() - tw < 5000:
+		await c.get_tree().process_frame
 	await _sleep(0.4)
 	c._on_edit("test.dur_on", true)
 	c._on_edit("test.duration", 6.0)
@@ -175,7 +178,11 @@ func _sleep(s: float) -> void:
 	await c.get_tree().create_timer(s).timeout
 
 func _wait_world(prev: int) -> void:
+	var t0 := Time.get_ticks_msec()
 	while c.world == null or c.world_seq == prev or c.st.is_empty() or int(c.st.get("world", -1)) != c.world_seq:
+		if Time.get_ticks_msec() - t0 > 60000:          # 멈추지 말고 실패로 보고
+			_check("새 장면 60 s 안에 도착", false)
+			return
 		await c.get_tree().process_frame
 
 func _shot(name: String) -> void:
@@ -207,6 +214,9 @@ func _move(pos: Vector2, rel: Vector2, mask: int) -> void:
 	c.get_viewport().push_input(e, true)
 
 func _click(ctrl: Control) -> void:
+	# 직전 조작으로 레이아웃이 바뀌었을 수 있음 (요약·탭 다시 그림) → 자리 잡을 때까지 몇 프레임 기다린 뒤 위치 계산
+	for i in 3:
+		await c.get_tree().process_frame
 	if c.sidebar.scroll.is_ancestor_of(ctrl):
 		c.sidebar.scroll.ensure_control_visible(ctrl)
 		await c.get_tree().process_frame

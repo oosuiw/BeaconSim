@@ -104,3 +104,63 @@ def read_step(path, deflection=0.6, angle=0.5):
     for i in range(1, roots.Length() + 1):
         walk(roots.Value(i), TopLoc_Location(), (), None)
     return parts
+
+
+def find_holes(path, name_substr, rmin=0.5, rmax=5.0):
+    """STEP 에서 이름에 name_substr 가 들어간 부품의 원통면(구멍) → [(반지름 mm, 중심 xyz, 축 xyz)] 전역 좌표."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GeomAbs import GeomAbs_Cylinder
+    from OCP.GProp import GProp_GProps
+    from OCP.STEPCAFControl import STEPCAFControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDF import TDF_Label, TDF_LabelSequence
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+    doc = TDocStd_Document(TCollection_ExtendedString('step'))
+    rd = STEPCAFControl_Reader()
+    rd.SetNameMode(True)
+    rd.ReadFile(path)
+    rd.Transfer(doc)
+    st = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+
+    def nm(lab):
+        a = TDataStd_Name()
+        return a.Get().ToExtString().replace('\n', ' ') if lab.FindAttribute(TDataStd_Name.GetID_s(), a) else ''
+    shapes = []
+
+    def walk(lab, loc):
+        ref = TDF_Label()
+        if st.IsReference_s(lab) and st.GetReferredShape_s(lab, ref):
+            walk(ref, loc.Multiplied(st.GetLocation_s(lab)))
+            return
+        if name_substr in nm(lab):
+            shapes.append(st.GetShape_s(lab).Moved(loc))
+            return
+        if st.IsAssembly_s(lab):
+            kids = TDF_LabelSequence()
+            st.GetComponents_s(lab, kids)
+            for i in range(1, kids.Length() + 1):
+                walk(kids.Value(i), loc)
+    roots = TDF_LabelSequence()
+    st.GetFreeShapes(roots)
+    for i in range(1, roots.Length() + 1):
+        walk(roots.Value(i), TopLoc_Location())
+    out = []
+    for sh in shapes:
+        ex = TopExp_Explorer(sh, TopAbs_FACE)
+        while ex.More():
+            f = TopoDS.Face_s(ex.Current())
+            s = BRepAdaptor_Surface(f)
+            if s.GetType() == GeomAbs_Cylinder and rmin <= s.Cylinder().Radius() <= rmax:
+                g = GProp_GProps()
+                BRepGProp.SurfaceProperties_s(f, g)
+                c, a = g.CentreOfMass(), s.Cylinder().Axis().Direction()
+                out.append((s.Cylinder().Radius(), np.array([c.X(), c.Y(), c.Z()]), np.array([a.X(), a.Y(), a.Z()])))
+            ex.Next()
+    return out
