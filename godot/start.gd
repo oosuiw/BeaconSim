@@ -439,11 +439,13 @@ func set_mode(mm: Dictionary) -> void:
 			c.queue_free()
 		var h := HBoxContainer.new()
 		ros_box.add_child(h)
-		h.add_child(K.chip(K.ic(K.I_LINK) + ("  ROS2 연동" if m["ros"] else "  ROS2 없음 (단독 실행)"),
-			K.ACCENT if m["ros"] else K.MUTED))
+		h.add_child(K.chip(K.ic(K.I_LINK) + (("  ROS2 연동 · 도메인 %s" % str(m.get("ros_domain"))) if m["ros"]
+			else "  ROS2 없음 (단독 실행)"), K.ACCENT if m["ros"] else K.MUTED))
 		h.add_child(K.chip(K.ic(K.I_GAMEPAD) + "  비콘 조작: /cmd_vel → 키보드", K.MUTED))
 		var notes := ["시험 중 조건은 잠깁니다. 바꾸면 \"이 조건으로 재시작\".", "키보드 조작은 \"수동 개입\"으로 리포트에 기록됩니다."] \
 			if sel == "test" else ["개발 모드: 조건을 바꾸고 \"적용\"을 누르면 바로 반영됩니다."]
+		if m["ros"]:
+			notes = notes + ["센서·TF·/clock 토픽은 시작을 누르면 발행됩니다 (받는 쪽 ROS_DOMAIN_ID 를 같게)."]
 		for n in notes:
 			var l := K.label(n, K.MUTED, 12)
 			l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

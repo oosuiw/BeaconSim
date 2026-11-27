@@ -25,6 +25,10 @@ var main_cam: Camera3D
 var neutral_env: Environment
 var sensor_sv: SubViewport
 var sensor_cam: Camera3D
+var label_sv: SubViewport          # 카메라 정답 라벨 (같은 시점, 라벨 레이어만)
+var label_cam: Camera3D
+var show_labels := false
+var panel_mat: ShaderMaterial
 var rain_main: GPUParticles3D
 var rain_sensor: GPUParticles3D
 var orbit := {"target": Vector3.ZERO, "dist": 30.0, "yaw": 0.0, "pitch": deg_to_rad(20)}
@@ -618,6 +622,27 @@ func _setup_sensor_camera(c: Dictionary) -> void:
 	sensor_cam.cull_mask = SENSOR_MASK
 	sensor_cam.current = true
 	sensor_sv.add_child(sensor_cam)
+	# 정답 라벨 카메라: 같은 크기·시야, 라벨 레이어만, 계단 현상 없이 (MSAA 끔), 조명·안개·후처리 없음
+	label_sv = SubViewport.new()
+	label_sv.size = sensor_sv.size
+	label_sv.msaa_3d = Viewport.MSAA_DISABLED
+	label_sv.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+	label_sv.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	add_child(label_sv)
+	label_cam = Camera3D.new()
+	label_cam.keep_aspect = Camera3D.KEEP_HEIGHT
+	label_cam.fov = sensor_cam.fov
+	label_cam.near = sensor_cam.near
+	label_cam.far = sensor_cam.far
+	label_cam.cull_mask = BeaconWorld.LABEL_LAYER
+	var le := Environment.new()
+	le.background_mode = Environment.BG_COLOR
+	le.background_color = Color.BLACK               # 하늘 = 0
+	le.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	le.ambient_light_source = Environment.AMBIENT_SOURCE_DISABLED
+	label_cam.environment = le
+	label_cam.current = true
+	label_sv.add_child(label_cam)
 	var tr: TextureRect = cam_panel.get_node("v/img")
 	tr.texture = sensor_sv.get_texture()
 	# 렌즈 왜곡 (ROS 로 나가는 영상과 같은 모습): 출력 화소마다 렌더 영상 UV 를 담은 맵으로 다시 샘플
@@ -629,15 +654,31 @@ func _setup_sensor_camera(c: Dictionary) -> void:
 		var sh := Shader.new()
 		sh.code = """shader_type canvas_item;
 uniform sampler2D uvmap : filter_nearest;
+uniform sampler2D labels : filter_nearest;
+uniform bool show_labels = false;
+uniform vec3 palette[16];
 void fragment() {
 	vec2 uv = texture(uvmap, UV).rg;
 	bool inside = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
-	COLOR = inside ? vec4(texture(TEXTURE, uv).rgb, 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
+	vec3 c = texture(TEXTURE, uv).rgb;
+	if (show_labels) {
+		int id = clamp(int(round(texture(labels, uv).r * 255.0 / 20.0)), 0, 15);
+		c = palette[id];
+	}
+	COLOR = inside ? vec4(c, 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
 }"""
 		var mat := ShaderMaterial.new()
 		mat.shader = sh
 		mat.set_shader_parameter("uvmap", ImageTexture.create_from_image(img))
+		mat.set_shader_parameter("labels", label_sv.get_texture())
+		var pal := PackedVector3Array()
+		pal.resize(16)
+		var lc: Array = hello.get("label_colors", [])
+		for i in range(mini(lc.size(), 16)):
+			pal[i] = Vector3(lc[i][0], lc[i][1], lc[i][2])
+		mat.set_shader_parameter("palette", pal)
 		tr.material = mat
+		panel_mat = mat
 		tr.stretch_mode = TextureRect.STRETCH_SCALE
 		tr.custom_minimum_size = Vector2(500, 500.0 * h / w)
 	cam_panel.get_node("v/h/info").text = "%d×%d · %.0f Hz · HFOV %.0f°" % [int(c["width"]), int(c["height"]),
@@ -649,6 +690,10 @@ func _capture_for_ros(m: Dictionary) -> void:
 	cam_busy = true
 	BeaconWorld.follow_weather(rain_sensor, sensor_cam)
 	sensor_sv.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var want_labels: bool = m.get("label_path", "") != ""
+	if want_labels:
+		label_cam.transform = sensor_cam.transform
+		label_sv.render_target_update_mode = SubViewport.UPDATE_ONCE
 	await RenderingServer.frame_post_draw
 	var img := sensor_sv.get_texture().get_image()
 	img.convert(Image.FORMAT_RGB8)
@@ -656,7 +701,14 @@ func _capture_for_ros(m: Dictionary) -> void:
 	if f:
 		f.store_buffer(img.get_data())
 		f.close()
-		_send({"type": "cam_done", "seq": m["seq"], "w": img.get_width(), "h": img.get_height()})
+		if want_labels:                     # 정답 라벨: R 채널만 (라벨 번호 x 20)
+			var li := label_sv.get_texture().get_image()
+			li.convert(Image.FORMAT_R8)
+			var lf := FileAccess.open(m["label_path"], FileAccess.WRITE)
+			if lf:
+				lf.store_buffer(li.get_data())
+				lf.close()
+		_send({"type": "cam_done", "seq": m["seq"], "w": img.get_width(), "h": img.get_height(), "labels": want_labels})
 	cam_busy = false
 
 # ================================================================== 시점 / 입력
@@ -811,6 +863,9 @@ func _process(dt: float) -> void:
 			cam_next = 1.0 / float(hello.get("camera", {}).get("rate_hz", 10.0))
 			BeaconWorld.follow_weather(rain_sensor, sensor_cam)
 			sensor_sv.render_target_update_mode = SubViewport.UPDATE_ONCE
+			if show_labels:
+				label_cam.transform = sensor_cam.transform
+				label_sv.render_target_update_mode = SubViewport.UPDATE_ONCE
 	if shot_path != "" and world != null and not st.is_empty():
 		if shot_at < 0:
 			shot_at = Time.get_ticks_msec() / 1000.0 + float(args.get("shot-delay", "8"))
@@ -1024,6 +1079,13 @@ func _build_camera_panel() -> void:
 	v.add_child(h)
 	h.add_child(K.chip(K.ic(K.I_CAMERA) + "  Arducam B0495", K.ACCENT))
 	h.add_child(K.chip("Godot", K.TEAL))
+	var lb := K.btn("라벨", "정답 라벨 영상 보기 (도로·차선·차량… — /ground_truth/camera/arducam/labels 와 같은 내용)", true)
+	lb.add_theme_font_size_override("font_size", 12)
+	lb.toggled.connect(func(on):
+		show_labels = on
+		if panel_mat:
+			panel_mat.set_shader_parameter("show_labels", on))
+	h.add_child(lb)
 	var info := K.label("", K.MUTED, 12)
 	info.name = "info"
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1094,7 +1156,7 @@ func _update_ui() -> void:
 	lbl_cmd.text = K.ic(K.I_GAMEPAD) + "  명령 " + src
 	K.set_chip_color(lbl_cmd, K.OK if src != "-" else K.MUTED)
 	var ros: bool = st.get("ros", false)
-	lbl_ros.text = K.ic(K.I_LINK) + ("  ROS2" if ros else "  ROS2 없음")
+	lbl_ros.text = K.ic(K.I_LINK) + (("  ROS2 · 도메인 %s" % str(hello.get("ros_domain"))) if ros else "  ROS2 없음")
 	K.set_chip_color(lbl_ros, K.ACCENT if ros else K.MUTED)
 	dash["v"].text = "%+.1f m/s" % float(st["v"])
 	dash["acc"].text = "%.0f m" % float(st["acc_dist"])

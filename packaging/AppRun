@@ -11,6 +11,13 @@ ROOT="$HERE/usr/share/beaconsim"
 PY="$HERE/usr/python/bin/python3"
 export PYTHONNOUSERSITE=1
 unset PYTHONHOME
+# 파일 관리자에서 더블클릭하면 ~/.bashrc 를 읽지 않아 ROS 도메인·RMW 가 터미널과 달라진다 → 비어 있으면 거기서 가져옴
+from_bashrc() {
+  [ -f "$HOME/.bashrc" ] || return
+  grep -E "^[[:space:]]*export[[:space:]]+$1=" "$HOME/.bashrc" | tail -1 | sed -E 's/^[^=]*=//; s/["'"'"'[:space:]]//g'
+}
+if [ -z "$ROS_DOMAIN_ID" ]; then v=$(from_bashrc ROS_DOMAIN_ID); [ -n "$v" ] && export ROS_DOMAIN_ID="$v"; fi
+if [ -z "$RMW_IMPLEMENTATION" ]; then v=$(from_bashrc RMW_IMPLEMENTATION); [ -n "$v" ] && export RMW_IMPLEMENTATION="$v"; fi
 if [ -z "$BEACONSIM_NO_ROS" ] && [ -f /opt/ros/humble/setup.sh ]; then
   # ROS2 Humble(Python 3.10)이 있으면 rclpy·메시지 패키지 사용
   . /opt/ros/humble/setup.sh >/dev/null 2>&1 || true

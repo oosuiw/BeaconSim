@@ -1,6 +1,9 @@
 """ROS2 연동 (있으면): RosBridge(센서·TF·/cmd_vel) + 카메라 영상 발행. GUI 종류와 무관하게 쓴다."""
 import array
+import os
 import threading
+
+import numpy as np
 
 
 class RosLink:
@@ -8,6 +11,7 @@ class RosLink:
 
     def __init__(self, log):
         self.ok, self.bridge, self.node = False, None, None
+        self.domain, self.rmw = None, None
         self.log = log
         try:
             import rclpy
@@ -20,6 +24,9 @@ class RosLink:
                 rclpy.init()
             self.node = Node('beacon_sim_app')
             self.ok = True
+            self.domain = int(os.environ.get('ROS_DOMAIN_ID', '0') or 0)
+            self.rmw = os.environ.get('RMW_IMPLEMENTATION', '') or 'rmw_fastrtps_cpp (기본)'
+            log(f'ROS2 연동: 도메인 {self.domain}, {self.rmw} — 모드를 시작하면 센서·TF·/clock 토픽 발행')
         except Exception as e:        # noqa: BLE001
             log(f'ROS2 연동 없음 (단독 실행): {e}')
 
@@ -34,6 +41,9 @@ class RosLink:
             qs = QoSProfile(depth=2, reliability=ReliabilityPolicy.BEST_EFFORT)
             self.pub_img = self.node.create_publisher(Image, cfg['camera']['image_topic'], qs)
             self.pub_info = self.node.create_publisher(CameraInfo, cfg['camera']['info_topic'], qs)
+            self.pub_label = self.node.create_publisher(Image, cfg['camera'].get('gt_topic',
+                                                        '/ground_truth/camera/arducam/labels'), qs)
+
             self.Image, self.CameraInfo = Image, CameraInfo
             threading.Thread(target=self._spin, daemon=True).start()
             self.log('ROS2 연동: 토픽 발행 중, /cmd_vel 수신 대기')
@@ -85,6 +95,20 @@ class RosLink:
         info.p = [float(cam.K[0, 0]), 0.0, float(cam.K[0, 2]), 0.0, 0.0, float(cam.K[1, 1]), float(cam.K[1, 2]),
                   0.0, 0.0, 0.0, 1.0, 0.0]
         self.pub_info.publish(info)
+
+    def publish_label(self, lab, t, frame):
+        """카메라 정답 라벨 (mono8, 픽셀 = 라벨 번호). 헤더 시각·프레임은 영상과 같다."""
+        if not self.ok or self.bridge is None:
+            return
+        from .ros_bridge import t_to_msg
+        msg = self.Image()
+        msg.header.stamp, msg.header.frame_id = t_to_msg(t), frame
+        msg.height, msg.width, msg.encoding, msg.is_bigendian = lab.shape[0], lab.shape[1], 'mono8', 0
+        msg.step = lab.shape[1]
+        data = array.array('B')
+        data.frombytes(memoryview(np.ascontiguousarray(lab)).cast('B'))
+        msg.data = data
+        self.pub_label.publish(msg)
 
     def shutdown(self):
         if self.ok:

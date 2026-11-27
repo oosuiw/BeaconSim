@@ -531,6 +531,7 @@ class Server:
         self.export_was_busy = False
         shm = '/dev/shm' if os.path.isdir('/dev/shm') else CACHE_DIR
         self.cam_path = os.path.join(shm, f'beaconsim_view_{os.getpid()}.rgb')
+        self.label_path = os.path.join(shm, f'beaconsim_label_{os.getpid()}.r8')
         # 폰트는 실행 인자로 넘겨 창이 처음 그려질 때부터 쓰게 한다 (Godot 은 시스템 폰트를 쓰지 않으므로 없으면 한글이 □)
         self.fonts = ui_fonts()
         self.icons = os.path.join(ROOT, 'assets', 'fonts', 'Font_Awesome_6_Free-Solid-900.otf')
@@ -860,7 +861,9 @@ class Server:
             per = 1.0 / self.be.base_cfg['camera']['rate_hz']
             # 정해진 격자(0.1 s 간격)에 맞춘다: '지금 + 주기'로 잡으면 왕복 시간만큼 매번 밀려 9 Hz 미만이 된다
             self.cam_next_t = max(self.cam_next_t + per, snap['t'] - per / 2)
-            self.send({'type': 'cam_req', 'seq': self.cam_seq, 'path': self.cam_path})
+            gt = self.be.base_cfg['camera'].get('gt_enabled', True)
+            self.send({'type': 'cam_req', 'seq': self.cam_seq, 'path': self.cam_path,
+                       'label_path': self.label_path if gt else ''})
             self.cam_stats['req'] += 1
 
     def _on_cam_done(self, m):
@@ -876,7 +879,13 @@ class Server:
         if raw.size != w * h * 3 or (h, w) != (self.be.cam.Hr, self.be.cam.Wr):
             return
         img = self.be.cam.distort(raw.reshape(h, w, 3))
-        self.be.ros.publish_camera(img, t, self.be.cam, self.be.base_cfg['camera']['optical_frame'])
+        frame = self.be.base_cfg['camera']['optical_frame']
+        self.be.ros.publish_camera(img, t, self.be.cam, frame)
+        if m.get('labels'):                       # 정답 라벨: R = 번호 x 20 → 번호, 영상과 같은 왜곡 (최근접)
+            lr = np.fromfile(self.label_path, np.uint8)
+            if lr.size == w * h:
+                lab = np.rint(lr.reshape(h, w) / 20.0).astype(np.uint8)
+                self.be.ros.publish_label(self.be.cam.distort_nearest(lab), t, frame)
         self.cam_stats['pub'].append(time.time() - t_pub)
 
     def send_values(self):
@@ -907,6 +916,8 @@ class Server:
         uv = np.stack([(cam.map_x + 0.5) / cam.Wr, (cam.map_y + 0.5) / cam.Hr], -1).astype('<f4')
         uv.tofile(dmap)
         self.send({'type': 'hello', 'version': __version__, 'fonts': fonts, 'distort_map': dmap,
+                   'label_colors': LABEL_COLORS.tolist(),
+                   'ros_domain': getattr(self.be.ros, 'domain', None) if self.be.ros is not None else None,
                    'icons': os.path.join(ROOT, 'assets', 'fonts', 'Font_Awesome_6_Free-Solid-900.otf'),
                    'camera': {'width': self.be.cam.W, 'height': self.be.cam.H, 'hfov': self.be.cam.hfov,
                               'wr': self.be.cam.Wr, 'hr': self.be.cam.Hr,
@@ -971,6 +982,7 @@ class Server:
                 pass
         try:
             os.remove(self.cam_path)
+            os.remove(self.label_path)
         except OSError:
             pass
 

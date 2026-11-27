@@ -433,3 +433,8 @@ class CameraModel:
     def distort(self, raw):
         import cv2
         return cv2.remap(raw, self.map_x, self.map_y, cv2.INTER_LINEAR)
+
+    def distort_nearest(self, raw):
+        """라벨 영상용: 값이 섞이지 않게 최근접 (영상과 같은 왜곡)"""
+        import cv2
+        return cv2.remap(raw, self.map_x, self.map_y, cv2.INTER_NEAREST)

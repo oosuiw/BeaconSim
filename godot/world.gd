@@ -11,6 +11,42 @@ var dyn: Node3D
 var static_meshes: Array = []   # [MeshInstance3D, 분류, 기본색]
 var street_head_mat: StandardMaterial3D
 static var noise_cache := {}
+## 카메라 정답 라벨: 모든 물체의 복제본을 레이어 7(64)에 라벨 번호 색으로 (조명·안개 없음). 정답 카메라만 이 레이어를 본다.
+const LABEL_LAYER := 64
+const LABEL_STEP := 20.0                 # 라벨 번호 → 색 값 (R = 번호 x 20 / 255), 읽을 때 반올림
+static var label_ids := {"road": 1, "lane_white": 2, "lane_yellow": 3, "guardrail": 4, "barrier": 5, "terrain": 6,
+	"tunnel": 7, "vehicle": 8, "robot": 9, "sign": 10, "pole": 11, "accident": 12}
+static var label_mats := {}
+
+static func label_mat(cls: String) -> StandardMaterial3D:
+	var base := cls
+	var i := cls.find("_faded")            # 희미한 차선도 차선 (라이다 정답과 같음)
+	if i > 0:
+		base = cls.substr(0, i)
+	var id := int(label_ids.get(base, 0))
+	if not label_mats.has(id):
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.albedo_color = Color8(int(id * LABEL_STEP), 0, 0)
+		m.cull_mode = BaseMaterial3D.CULL_DISABLED
+		m.disable_fog = true
+		m.disable_receive_shadows = true
+		label_mats[id] = m
+	return label_mats[id]
+
+## 메시 인스턴스마다 라벨 복제본 (같은 메시, 자식이라 움직임을 그대로 따라감)
+static func add_label_copies(n: Node, cls: String) -> void:
+	for c in n.get_children():
+		add_label_copies(c, cls)
+	if n is MeshInstance3D and not n.get_meta("label", false):
+		var mi := n as MeshInstance3D
+		var d := MeshInstance3D.new()
+		d.mesh = mi.mesh
+		d.material_override = label_mat(cls)
+		d.layers = LABEL_LAYER
+		d.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		d.set_meta("label", true)
+		mi.add_child(d)
 var world_env: WorldEnvironment
 var sun: DirectionalLight3D
 var robot: Node3D
@@ -208,6 +244,7 @@ func _load_static(path: String) -> void:
 			if sm is BaseMaterial3D:
 				base = (sm as BaseMaterial3D).albedo_color
 			static_meshes.append([mi, cls, base])
+			add_label_copies(mi, cls)
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cls != "terrain" else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			if cls == "tunnel":                   # 레이어: 1 도로 등, 2 터널, 4 지형, 5 차량, 6 비콘 (메인 뷰에서 켜고 끔)
 				mi.layers = 2
@@ -216,6 +253,7 @@ func _load_static(path: String) -> void:
 	robot = root.find_child("robot", false, false)
 	if robot:
 		set_layers(robot, 32)
+		add_label_copies(robot, "robot")
 
 func _load_vehicles(path: String) -> void:
 	var root := _gltf(path)
@@ -236,6 +274,8 @@ func _load_vehicles(path: String) -> void:
 		v.transform = xf(a["T"])
 
 static func set_layers(n: Node, layer: int) -> void:
+	if n.get_meta("label", false):
+		return
 	if n is VisualInstance3D and not (n is Light3D):
 		(n as VisualInstance3D).layers = layer
 	for c in n.get_children():
@@ -275,6 +315,7 @@ func _make_vehicle(pi: int, col: Array, hazard := false) -> Node3D:
 	else:
 		acc_lights.append(sl)
 	set_layers(v, 16)
+	add_label_copies(v, "accident" if hazard else "vehicle")
 	return v
 
 func _lamp_mat(head: bool, hazard: bool) -> StandardMaterial3D:

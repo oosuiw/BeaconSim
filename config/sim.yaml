@@ -139,6 +139,8 @@ camera:
   image_topic: /sensing/camera/arducam/image_raw
   info_topic: /sensing/camera/arducam/camera_info
   optical_frame: camera_optical_link
+  gt_topic: /ground_truth/camera/arducam/labels   # 정답 라벨 영상 mono8 (픽셀 = 라벨 번호, 라이다 정답과 같은 번호). Godot 화면에서만
+  gt_enabled: true
   width: 1920
   height: 1200
   # 임시 내부 파라미터: 3.6mm / 3.0um → f = 1200px. 왜곡은 데이터시트 HFOV 82°에 맞춘 추정값.

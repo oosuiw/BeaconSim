@@ -376,7 +376,7 @@ def mode_state(be):
     out = {'type': 'mode', 'mode': be.mode, 'mode_sel': be.mode_sel, 'prev_mode': be.prev_mode,
            'mode_ko': MODE_KO, 'robot_ready': be.robot_cfg is not None,
            'robot_busy': be.robot_future is not None and not be.robot_future.done(), 'building': building,
-           'ros': bool(be.ros is not None and be.ros.ok), 'presets': [[n, d] for n, d, _ in PRESETS],
+           'ros': bool(be.ros is not None and be.ros.ok), 'ros_domain': getattr(be.ros, 'domain', None), 'presets': [[n, d] for n, d, _ in PRESETS],
            'summary': be.summary_rows(be.mode_sel), 'changes': be.change_labels(),
            'test_name': be.test.get('name', '')}
     s = be.session
