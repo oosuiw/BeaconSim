@@ -13,6 +13,10 @@ func run(client: Node, dir: String) -> void:
 	# 0) 시작 화면: 개발 카드 → 개발 시작
 	while c.mode_msg.is_empty():
 		await c.get_tree().process_frame
+	var tr := Time.get_ticks_msec()
+	while not c.mode_msg.get("robot_ready", false) and Time.get_ticks_msec() - tr < 180000:   # 첫 실행: STL → 로봇 모델 생성
+		await c.get_tree().process_frame
+	await _sleep(0.5)
 	_check("시작 화면 표시", c.start_ui.visible)
 	await _shot("0_start")
 	await _click(c.start_ui.cards["test"])

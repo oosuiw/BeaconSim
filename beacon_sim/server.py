@@ -121,6 +121,8 @@ class Backend(CondMixin):
         if self.robot_cfg is not None:
             _, T_bc = sensor_mounts(self.robot_cfg)['camera']
             self.T_b_opt = T_bc @ T_CAMLINK_OPTICAL
+        else:
+            self.log('로봇 모델이 없습니다. 비콘 CAD(STL)를 선택하세요.')
 
     # ---- 설정 (ImGui 앱과 같은 파일)
     def _load_settings(self):
@@ -290,9 +292,12 @@ class Backend(CondMixin):
             self.eth.stop_at = self.session.duration     # 시험 시간에 엔진이 정확히 멈춤
         self.eth.start()
         sm, ms = eng.scn.summary(), model.summary()
-        self.log(f'맵 시드 {ms["seed"]} ({ms["length_m"]:.0f} m, {ms["lanes"]}차로, 터널 {len(ms["tunnels"])}) | '
+        self.log(f'맵 시드 {ms["seed"]} ({ms["length_m"]:.0f} m, {ms["lanes"]}차로, 터널 {len(ms["tunnels"])}, '
+                 f'차선 불량 {ms["lane_wear_pct"]}%) | '
                  f'시나리오 시드 {eng.scn.sp.seed}: {sm["side"]} {sm["lane"]}차로, 사고 s={sm["accident_s"]:.0f} m | '
                  f'환경 {eng.env.label()} | 교통 {"켜짐" if eng.traffic.tp.enabled else "꺼짐(검증 모드)"}')
+        if 'tele15' in eng.sensors:
+            self.log(f'Tele-15 스캔 패턴: {eng.sensors["tele15"].pattern}')
         return js, origin, lane
 
     def set_pause(self, p):
@@ -409,6 +414,14 @@ class Backend(CondMixin):
             except Exception as ex:     # noqa: BLE001
                 self.log(f'로봇 모델 생성 실패: {ex}')
             self.changed = True
+        f = self.export_future
+        if f is not None and f.done():
+            self.export_future = None
+            try:
+                v = f.result()['validation']
+                self.log('맵 검증 ' + ('통과' if v['ok'] else '실패') + f' (경로 하행 {v.get("route_down")}, 상행 {v.get("route_up")})')
+            except Exception as ex:     # noqa: BLE001
+                self.log(f'저장 실패: {ex}')
         if self.hold and time.time() - self.hold_t > 60.0:   # 화면 응답이 없어도 1분 뒤엔 출발
             self.release_hold()
         s = self.session
@@ -819,7 +832,13 @@ class Server:
             fonts = {w: _ui_font(w) for w in fonts}               # Pretendard PUA 영역 제거본 (아이콘 충돌 방지)
         except Exception:     # noqa: BLE001
             pass
-        self.send({'type': 'hello', 'version': __version__, 'fonts': fonts,
+        # 카메라 패널용 렌즈 왜곡 맵 (출력 화소 → 렌더 영상 UV, float32 RG) — Godot 셰이더가 쓴다
+        cam = self.be.cam
+        dmap = os.path.join(CACHE_DIR, f'camera_distort_{cam.W}x{cam.H}.f32')
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        uv = np.stack([(cam.map_x + 0.5) / cam.Wr, (cam.map_y + 0.5) / cam.Hr], -1).astype('<f4')
+        uv.tofile(dmap)
+        self.send({'type': 'hello', 'version': __version__, 'fonts': fonts, 'distort_map': dmap,
                    'icons': os.path.join(ROOT, 'assets', 'fonts', 'Font_Awesome_6_Free-Solid-900.otf'),
                    'camera': {'width': self.be.cam.W, 'height': self.be.cam.H, 'hfov': self.be.cam.hfov,
                               'wr': self.be.cam.Wr, 'hr': self.be.cam.Hr,

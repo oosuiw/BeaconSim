@@ -1,6 +1,7 @@
 #!/bin/sh
 # BeaconSim AppImage 진입점
-#   BeaconSim.AppImage                      통합 시뮬레이터 GUI (추가 인자는 beacon_sim.app 으로)
+#   BeaconSim.AppImage [옵션]                  시뮬레이터 GUI (Godot 4 고품질 화면, 옵션은 beacon_sim.server 로)
+#   BeaconSim.AppImage legacy [옵션]           기존 GUI (ImGui) — Godot 이 동작하지 않는 PC 용
 #   BeaconSim.AppImage scenarios [YAML|폴더] [--ros] [--out DIR]   회귀 테스트 (기본: 동봉 scenarios/)
 #   BeaconSim.AppImage export-map --seed 7 OUT_DIR                  Lanelet2 OSM/PCD 맵 세트 저장
 #   BeaconSim.AppImage build-robot --stl CAD.stl                     로봇 모델 생성 (~/.config/beaconsim)
@@ -16,9 +17,17 @@ if [ -z "$BEACONSIM_NO_ROS" ] && [ -f /opt/ros/humble/setup.sh ]; then
 fi
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 cd "$ROOT"
+NOROS=""
+[ -n "$BEACONSIM_NO_ROS" ] && NOROS="--no-ros"
 case "$1" in
   scenarios)   shift; exec "$PY" "$ROOT/tools/run_scenarios.py" "$@" ;;
   export-map)  shift; exec "$PY" -m beacon_sim.export "$@" ;;
   build-robot) shift; exec "$PY" -m beacon_sim.robot_build "$@" ;;
-  *)           exec "$PY" -m beacon_sim.app "$@" ;;
+  legacy)      shift; exec "$PY" -m beacon_sim.app $NOROS "$@" ;;
+  *)
+    if ls "$ROOT"/third_party/godot/Godot_v4*_linux.x86_64 >/dev/null 2>&1 || [ -n "$BEACONSIM_GODOT" ]; then
+      exec "$PY" -m beacon_sim.server $NOROS "$@"
+    fi
+    echo "Godot 4 가 들어 있지 않은 빌드 → 기존 GUI 로 실행합니다" >&2
+    exec "$PY" -m beacon_sim.app $NOROS "$@" ;;
 esac

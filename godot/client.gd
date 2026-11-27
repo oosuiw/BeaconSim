@@ -292,8 +292,6 @@ func _on_world(m: Dictionary, bin: PackedByteArray) -> void:
 	add_child(world)
 	world.build(m["scene"])
 	world_seq = int(m["seq"])
-	await get_tree().process_frame
-	_send({"type": "world_ready", "seq": world_seq})        # 백엔드: 이제 엔진 출발
 	world_msg = m
 	veh_dims = m["veh_dims"]
 	rain_main = world.make_weather()
@@ -321,6 +319,8 @@ func _on_world(m: Dictionary, bin: PackedByteArray) -> void:
 	lbl_acc.position = ap + Vector3(0, 6.6, 0)
 	loading.visible = false
 	_preset("beacon")
+	await get_tree().process_frame
+	_send({"type": "world_ready", "seq": world_seq})        # 백엔드: 이제 엔진 출발
 
 func _set_main_env() -> void:
 	main_cam.environment = null if show["env_view"] else neutral_env
@@ -601,6 +601,26 @@ func _setup_sensor_camera(c: Dictionary) -> void:
 	sensor_sv.add_child(sensor_cam)
 	var tr: TextureRect = cam_panel.get_node("v/img")
 	tr.texture = sensor_sv.get_texture()
+	# 렌즈 왜곡 (ROS 로 나가는 영상과 같은 모습): 출력 화소마다 렌더 영상 UV 를 담은 맵으로 다시 샘플
+	var dm: String = hello.get("distort_map", "")
+	if dm != "" and FileAccess.file_exists(dm):
+		var w := int(c["width"])
+		var h := int(c["height"])
+		var img := Image.create_from_data(w, h, false, Image.FORMAT_RGF, FileAccess.get_file_as_bytes(dm))
+		var sh := Shader.new()
+		sh.code = """shader_type canvas_item;
+uniform sampler2D uvmap : filter_nearest;
+void fragment() {
+	vec2 uv = texture(uvmap, UV).rg;
+	bool inside = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
+	COLOR = inside ? vec4(texture(TEXTURE, uv).rgb, 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
+}"""
+		var mat := ShaderMaterial.new()
+		mat.shader = sh
+		mat.set_shader_parameter("uvmap", ImageTexture.create_from_image(img))
+		tr.material = mat
+		tr.stretch_mode = TextureRect.STRETCH_SCALE
+		tr.custom_minimum_size = Vector2(500, 500.0 * h / w)
 	cam_panel.get_node("v/h/info").text = "%d×%d · %.0f Hz · HFOV %.0f°" % [int(c["width"]), int(c["height"]),
 		float(c["rate_hz"]), float(c["hfov"])]
 
@@ -638,6 +658,8 @@ func _preset(name: String) -> void:
 		orbit["dist"] = maxf(hi.x - lo.x, hi.z - lo.z) * 0.9
 		orbit["pitch"] = deg_to_rad(70)
 		orbit["yaw"] = deg_to_rad(-90)
+	elif name == "tunnel" and world_msg.get("tunnels", []).size() == 0:
+		sidebar.add_log(Time.get_time_string_from_system() + " 터널 없음")
 	elif name == "tunnel" and world_msg.get("tunnels", []).size() > 0:
 		follow = false
 		var t: Array = world_msg["tunnels"][0]

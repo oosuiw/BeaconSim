@@ -6,18 +6,20 @@
 
 ```bash
 chmod +x BeaconSim-*-x86_64.AppImage
-./BeaconSim-*-x86_64.AppImage                                   # GUI (처음 실행 시 비콘 CAD STL 선택)
+./BeaconSim-*-x86_64.AppImage                                   # GUI (Godot 4 화면, 처음 실행 시 비콘 CAD STL 선택)
+./BeaconSim-*-x86_64.AppImage legacy                            # 기존 GUI (ImGui) — Godot(Vulkan)이 안 되는 PC 용
 ./BeaconSim-*-x86_64.AppImage scenarios [YAML|폴더] [--ros]      # 회귀 테스트 (기본: 동봉 시나리오)
 ./BeaconSim-*-x86_64.AppImage export-map --seed 7 ~/maps/s7      # Autoware 맵 세트
 ./BeaconSim-*-x86_64.AppImage build-robot --stl CAD.stl          # 로봇 모델 생성 (~/.config/beaconsim)
 ```
 - PC에 ROS2 Humble이 있으면 자동으로 토픽 발행·`/cmd_vel` 수신 (`BEACONSIM_NO_ROS=1` 로 끔)
 - Tele-15: `~/.config/beaconsim/tele.csv`가 있으면 실제 패턴, 없으면 자체 로제트 근사 패턴
+- 카메라 영상·점군을 다른 노드가 받는 PC에서는 한 번: `sudo tools/setup_ros_network.sh` (아래 "수신 쪽 영상·점군이 빠질 때")
 - 빌드: `packaging/build_appimage.sh`
 
 ## 설치 (소스)
 
-요구 사항: Ubuntu 22.04, NVIDIA RTX GPU + 드라이버 515 이상(RGL), OpenGL 3.3, (선택) ROS2 Humble.
+요구 사항: Ubuntu 22.04, NVIDIA RTX GPU + 드라이버 515 이상(RGL), Vulkan(Godot 화면) / OpenGL 3.3(기존 GUI), (선택) ROS2 Humble.
 
 ```bash
 git clone https://github.com/oosuiw/BeaconSim.git && cd BeaconSim
@@ -30,6 +32,7 @@ python3 -m venv --system-site-packages .venv          # ROS2 rclpy를 쓰려면 
 | 넣을 위치 | 내용 | 받는 곳 |
 |---|---|---|
 | `third_party/rgl/libRobotecGPULidar.so` | RGL v0.21.0 **core** 빌드 (ROS 확장 없는 것) | [RobotecGPULidar 릴리스](https://github.com/RobotecAI/RobotecGPULidar/releases) → `RGL-core-linux-x64.zip` |
+| `third_party/godot/Godot_v4.7.2-stable_linux.x86_64` | Godot 4 (MIT) — GUI 화면 | [godotengine.org](https://godotengine.org/download/linux/) → Linux x86_64 (압축 해제) |
 | `third_party/ref/tele.csv` | Livox Tele-15 비반복 스캔 패턴 | [livox_laser_simulation](https://github.com/lvfengchi/livox_laser_simulation) → `scan_mode/tele.csv` |
 
 헤더(`include/rgl/api/core.h`)는 참고용이라 필요 없습니다. Pandar40P 채널 표는 AWSIM(`LaserArrayLibrary.cs`) 값을 코드에 옮겨 두었습니다.
@@ -46,7 +49,8 @@ python3 tools/build_robot.py        # → robot/meshes/*, config/robot.yaml (센
 ## 실행
 
 ```bash
-./run_app.sh                 # 통합 시뮬레이터 GUI (맵·시나리오·교통·환경·센서 시각화, ROS2 있으면 토픽 발행)
+./run_godot.sh               # 통합 시뮬레이터 GUI (Godot 4 화면 + 파이썬 엔진, ROS2 있으면 토픽 발행)
+./run_app.sh                 # 기존 GUI (ImGui) — 기능은 같고 화면 품질이 낮음
 ./run_sim.sh                 # 헤드리스 ROS2 심 (+ 카메라 노드). rviz:=true 로 RViz도 가능
 ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: -1.0}}"   # 상위 제어기 대신 시험
 
@@ -54,7 +58,7 @@ ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: -1.0}}"   # 
 .venv/bin/python -m beacon_sim.export --seed 7 --lanes 2 --length 3000 ~/BeaconSim_maps/s7
 ```
 
-### 통합 시뮬레이터 (run_app.sh)
+### 통합 시뮬레이터 (run_godot.sh)
 시작 화면에서 모드를 고르고 조건(맵 · 시나리오 · 교통 · 환경, 시험이면 시험 설정)을 정한 뒤 시작한다.
 프리셋과 "YAML 불러오기"(회귀 시나리오나 시험 결과의 scenario.yaml)로 같은 조건을 재현할 수 있다. 사이드바 🏠 → 시작 화면.
 
@@ -69,7 +73,7 @@ ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: -1.0}}"   # 
 - 결과: `results/gui/<시각>_<이름>/` (AppImage는 `~/BeaconSim_results/gui/`) — `report.md`, `result.json`, `timeseries.csv`,
   `scenario.yaml`(랜덤 항목을 실제 값으로 고정 → 회귀 테스트에 그대로 사용). 결과 창의 "회귀 시나리오로 저장" → `scenarios/`
 - 명령행: `--mode dev|test` 로 시작 화면 건너뛰기, `--scenario X.yaml` 로 조건 불러오기
-- 탭: 맵 / 시나리오 / 교통 / 환경 / 보기 / 저장. 상단: 일시정지, 배속(0.25~4x), 시나리오 재시작(R), 맵 재생성(G), 시드 랜덤 체크
+- 탭: 맵 / 시나리오 / 교통 / 환경 / 보기 / 저장. 상단: 일시정지, 배속(0.5~4x), 시나리오 재시작(R), 맵 재생성(G), 시드 랜덤 체크
 - 비콘 조작: ROS `/cmd_vel`(상위 제어기) 우선, 없으면 방향키(↑전진 ↓후진 ←→회전, 속도는 시나리오 탭)
 - 보기: Pandar40P(세기/정답 라벨 색), Tele-15, ARS408 클러스터·객체 상자, GNSS 위치·오차원·궤적(정답 궤적 흰색), 카메라 창,
   SCC/운전자 상태 점(하늘 SCC 작동, 보라 SCC가 비콘 추종 + 연결선, 노랑 운전자 인지, 빨강 추돌)
@@ -150,10 +154,15 @@ source /opt/ros/humble/setup.bash && .venv/bin/python tools/run_scenarios.py sce
 | `beacon_sim/scene.py` | 도로 모델 → 씬 메시 |
 | `beacon_sim/traffic.py` | 사고 현장·비콘 배치, 접근 차량 교통 시뮬레이션 |
 | `beacon_sim/export.py` | Lanelet2 OSM, map_projector_info, PCD 저장 + 검증 |
-| `beacon_sim/app.py` | 통합 시뮬레이터 GUI (Dear ImGui + moderngl + GLFW) |
+| `beacon_sim/server.py` | 통합 시뮬레이터 백엔드 (모드·시험·회귀·엔진 스레드·ROS) + Godot 창 연결 |
+| `beacon_sim/ui_schema.py`, `modes.py`, `session.py` | 사이드바·시작 화면 항목 정의 / 조건·프리셋·요약 / 시험 세션·회귀 실행 |
+| `beacon_sim/godot_link.py`, `godot/` | 장면 glb·json 내보내기, 카메라 모델 / Godot 프로젝트 (화면·UI) |
+| `beacon_sim/app.py`, `app_start.py` | 기존 GUI (Dear ImGui + moderngl + GLFW) |
 | `beacon_sim/render.py`, `imgui_mgl.py` | 공용 OpenGL 씬 렌더러, ImGui moderngl 백엔드(한글 동적 폰트) |
 | `tools/smoke_test.py` | ROS 없이 센서 1프레임 통계 |
 | `tools/capture_check.py` | 실행 중인 심에서 점군/이미지를 map 좌표로 그림 저장 |
+| `tools/topic_rates.py` | ROS 토픽 실제 수신 주기 (메시지를 풀지 않아 큰 영상도 정확) |
+| `tools/setup_ros_network.sh` | (sudo) 큰 메시지 수신 버퍼 설정 |
 
 ## 토픽
 
@@ -190,34 +199,22 @@ Copyright (c) 2026 BeaconSim authors. All rights reserved. (LICENSE 참고)
 코드는 참고용으로 공개되며, 사용·수정·배포에는 저작권자의 서면 허락이 필요합니다.
 함께 쓰는 제3자 구성요소(RGL, Pretendard, Font Awesome, Python 패키지)는 각자의 라이선스를 따릅니다 (packaging/THIRD_PARTY.md).
 
-## Godot 카메라 렌더러 (시제품)
-기존 카메라(moderngl)보다 고품질인 카메라 영상을 Godot 4 (Forward+)로 그린다. 엔진·교통·LiDAR/레이더는 그대로 쓴다.
-- 준비: [Godot 4.x Linux](https://godotengine.org/download/linux/)를 받아 `third_party/godot/` 에 압축 해제 (또는 `BEACONSIM_GODOT=<실행 파일>`)
-- 비교: `.venv/bin/python tools/godot_camera.py --times 8 --set environment.time_of_day=night --set environment.weather=rain`
-  → `results/godot/<시각>/compare_<t>.png` (위: 기존, 아래: Godot, 같은 렌즈 왜곡 적용)
-- 실시간: `--live 30` (Godot 창에 카메라 주기로 송출)
-- 구성: `beacon_sim/godot_link.py` (glb·json 내보내기, UDP 상태 송신), `godot/` (Godot 프로젝트)
-- GUI: 보기 탭 → 카메라 렌더러 "Godot 고품질" (또는 `--camera godot`). 카메라 창과 ROS 이미지 토픽이 Godot 영상으로 바뀐다.
-  Godot 은 1x1 투명 창으로 따로 실행되고(최소화하면 렌더링이 멈춤), 영상은 /dev/shm 으로 받는다. 맵·시나리오를 다시 만들면 약 5초 동안 기본 렌더러.
-- AppImage: `WITH_GODOT=1 packaging/build_appimage.sh` 로 Godot 실행 파일 포함. 없으면 `~/.config/beaconsim/godot/` 에 두면 된다.
-- 아직: 헤드리스(sim_core + camera_node) 경로는 기본 렌더러, 차량 창문·번호판 등 세부 모델 없음
+## Godot 화면 (기본 GUI)
+파이썬 백엔드(`beacon_sim/server.py`)가 엔진·센서·ROS·시험 평가를 맡고, Godot 4 창(`godot/`)이 3D 화면과 UI 를 그린다 (TCP 127.0.0.1).
+- 백엔드 → Godot: 장면(glb·json), 상태(60 Hz: 차량·비콘·GNSS·SCC), 점군·레이더, 설정 값·모드 상태·로그, 카메라 요청
+- Godot → 백엔드: 설정 변경·버튼, 방향키, 일시정지·배속, 장면 준비 완료, 카메라 영상(/dev/shm)
+- ROS 카메라: Godot 이 센서 카메라 시점으로 렌더 → 파이썬이 렌즈 왜곡(plumb_bob) 적용 후 발행. 카메라 패널도 같은 왜곡을 GPU 로 적용해 보여 준다
+- 사이드바·시작 화면 항목은 `beacon_sim/ui_schema.py` 가 정의하고 `godot/form.gd` 가 그린다 → 항목 추가는 파이썬만 고치면 된다.
+  모드·조건 로직은 `beacon_sim/modes.py` (기존 GUI 와 공용)
+- 파일: `client.gd`(앱), `world.gd`(장면·재질·조명·날씨), `sidebar.gd`, `start.gd`(시작 화면), `form.gd`, `result_dialog.gd`, `ui_kit.gd`(색·테마)
+- 명령행: `--mode dev|test|regress`(시작 화면 건너뛰기), `--scenario X.yaml`, `--set env.weather=rain`, `--size 3440x1400`, `--no-ros`, `--robot-stl CAD.stl`
+- 맵·시나리오를 새로 만들면 Godot 이 장면을 다 불러온 뒤에 엔진이 출발한다 (몇 초). 시험은 화면에 보이는 순간 t=0
+- 설정: 생성 조건·저장 위치는 기존 GUI 와 같은 `~/.config/beaconsim/app.json`, 화면 표시·방향키는 `godot_ui.json`
+- UI 자체 시험: `./run_godot.sh --no-ros --selftest /tmp/ui_selftest` — 가상 마우스·키 입력으로 시작 화면·탭·슬라이더·단축키·시험·결과 창·
+  회귀 화면을 눌러 보고(30개 항목) 화면을 저장 (`SELFTEST DONE fails=0` 이면 통과). 시험 결과 폴더가 `results/gui/` 에 하나 생긴다
+- 성능 로그: `BEACONSIM_PERF=1 ./run_godot.sh` → fps · RTF · 센서별 ms · 카메라 요청/완료/왕복
+- 개발용 비교 도구: `tools/godot_camera.py` (같은 순간을 기존 카메라와 Godot 으로 렌더해 비교)
 
-## Godot 프런트엔드 (개발 중, B안)
-화면·UI 를 Godot 4 로 옮기는 중. 파이썬 백엔드(`beacon_sim/server.py`)가 엔진·센서·ROS 를 맡고, Godot 창(`godot/client.gd`)과 TCP 로 연결한다.
-- 실행: `./run_godot.sh` (옵션: `--no-ros`, `--size 3440x1400`, `--set env.weather=rain`)
-- 1단계(완료): 3D 월드 고품질 렌더, 마우스 시점(좌 회전·우 이동·휠 확대, F 따라가기, 1/2/3 시점), 방향키 비콘 주행,
-  Space/R/G, Pandar·Tele·레이더(클러스터·앞면 판)·GNSS·SCC 표시, 재생 바·상황판·이벤트·카메라 패널,
-  ROS 카메라 토픽(Godot 렌더 → 렌즈 왜곡 → 발행)
-- 2단계(완료): 사이드바 탭(맵·시나리오·교통·환경·보기·저장)과 이벤트 피드(전체/차량), 도움말(F1), 상황판 범례,
-  레이더 감지 범위 면, 차량 이름표(추돌·SCC 추종 속도), Pandar 정답 라벨 색, Lanelet 선, 지형·터널·차량·비콘 표시 켜고 끄기, UI 배율.
-  탭 항목은 파이썬(`beacon_sim/ui_schema.py`)이 정의하고 Godot(`godot/sidebar.gd`)이 그린다 → 항목 추가는 파이썬만 고치면 된다.
-  생성 조건·저장 위치는 기존 앱과 같은 `~/.config/beaconsim/app.json`, 화면 표시·방향키 설정은 `godot_ui.json`
-- UI 자체 시험: `./run_godot.sh --no-ros --selftest results/ui_selftest` (가상 마우스·키 입력으로 탭·체크박스·슬라이더·단축키를 눌러 보고 화면 저장)
-- 3단계(완료): 시작 화면(개발/시험/회귀 카드, 프리셋·YAML 불러오기·기본값, 조건 탭, 요약, 최근 결과), 시험 모드
-  (사이드바 진행 카드·수동 개입 수·시험 종료, 조건 잠금 배너 → "이 조건으로 재시작"/되돌리기, 시험 설정 탭: 판정 기준·고장 주입·평가 토픽),
-  결과 창(기준 표·결과 폴더·회귀 시나리오로 저장·다시 시험), 회귀 실행(시나리오 선택·ROS 연동·진행·report.md), 첫 실행 STL 선택.
-  화면·시험 로직 중 UI 와 무관한 부분은 `beacon_sim/modes.py` 로 빼서 기존 앱과 같이 쓴다.
-  새 장면을 화면이 다 불러온 뒤에 엔진이 출발하고(시험은 보이는 순간 t=0), 시험 시간에는 엔진이 정확히 멈춘다.
-- 명령행: `./run_godot.sh --mode test --scenario scenarios/S01_open_clear.yaml` (시작 화면 없이 바로), `--robot-stl <CAD.stl>`
-- 다음: 4단계 AppImage 전환
-- 그동안 기존 GUI(`run_app.sh`)는 그대로 사용 가능
+### 기존 GUI (run_app.sh, AppImage `legacy`)
+Dear ImGui + moderngl. 기능(모드·시험·회귀·사이드바)은 같다. 보기 탭에서 카메라만 Godot 으로 바꿀 수 있다
+(`--camera godot`, 1x1 투명 창으로 따로 실행). Godot(Vulkan)이 동작하지 않는 PC 에서 쓴다.
