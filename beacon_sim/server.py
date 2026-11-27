@@ -34,7 +34,7 @@ from .environment import EnvParams
 from .evaluate import subscribe_eval
 from .modes import CondMixin, default_test
 from .session import RegressRun, TestSession, save_regression
-from .godot_link import C, CameraModel, export_scene, godot_bin, project_dir, to_g, xform_g
+from .godot_link import C, CameraModel, godot_env, export_scene, godot_bin, project_dir, to_g, xform_g
 from .roadgen import RoadParams, generate
 from .ros_link import RosLink
 from .traffic import B_CRASH, ScenarioParams, TrafficParams
@@ -114,6 +114,9 @@ class Backend(CondMixin):
         self.pool = ThreadPoolExecutor(max_workers=2)
         self.build_future = None
         self.world_seq = 0
+        self.map_seq = 0
+        self.scene_dir = os.path.join(CACHE_DIR, 'godot_scene', str(os.getpid()))
+        self._clean_scene_cache(startup=True)
         self.cam = CameraModel(self.base_cfg['camera'])
         self.ros = RosLink(self.log) if ros else None
         if self.ros is not None:
@@ -226,19 +229,48 @@ class Backend(CondMixin):
         cfg['faults'] = copy.deepcopy(self.test.get('faults') or []) if self.mode == 'test' else []
         return cfg
 
-    def _build_job(self, cfg, map_too, model, parts):
+    def _clean_scene_cache(self, startup=False):
+        """장면 캐시 정리: 시작할 때는 끝난 프로세스가 남긴 폴더, 그 뒤로는 지금 장면이 아닌 것 (각 약 40 MB)."""
+        import shutil
+        root = os.path.dirname(self.scene_dir)
+        if not os.path.isdir(root):
+            return
+        if startup:
+            for d in os.listdir(root):
+                pid = d.split('_')[0]
+                alive = pid.isdigit() and os.path.exists(f'/proc/{pid}')
+                if not alive or (pid == str(os.getpid()) and d != str(os.getpid())):
+                    shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+            return
+        if not os.path.isdir(self.scene_dir):
+            return
+        keep = {f'w{self.world_seq}', f'static_{self.map_seq}.glb'}
+        for d in os.listdir(self.scene_dir):
+            if d not in keep:
+                p = os.path.join(self.scene_dir, d)
+                shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
+
+    def _build_job(self, cfg, map_too, model, parts, map_seq, world_seq):
         if map_too:
             model = generate(RoadParams(**cfg['map']))
             parts = scene.build_static(model)
         eng = SimEngine(cfg, self.robot_cfg, model=model, parts=parts, log=self.log)
-        out = os.path.join(CACHE_DIR, 'godot_scene', f'{os.getpid()}_{self.world_seq + 1}')
-        _, js, origin = export_scene(eng, out, cfg['camera'], self.cam.Wr, self.cam.Hr, self.cam.K[1, 1])
+        # 정적 장면(맵·비콘)은 맵마다 한 번만 쓰고, 같은 맵으로 재시작하면 Godot 도 그대로 재사용한다
+        static = os.path.join(self.scene_dir, f'static_{map_seq}.glb')
+        out = os.path.join(self.scene_dir, f'w{world_seq}')
+        _, js, origin = export_scene(eng, out, cfg['camera'], self.cam.Wr, self.cam.Hr, self.cam.K[1, 1],
+                                     static_path=static, static_id=f'{os.getpid()}:{map_seq}')
         lane = lanelet_overlay(model) if map_too or self.model is None else None
         return model, parts, eng, cfg, js, origin, lane
+
+    def _perf(self, what):
+        if os.environ.get('BEACONSIM_PERF'):
+            print(f'PERF   {what} +{time.perf_counter() - getattr(self, "t_rebuild", time.perf_counter()):.2f} s', flush=True)
 
     def rebuild(self, map_too=False):
         if self.build_future is not None and not self.build_future.done():
             return
+        self.t_rebuild = time.perf_counter()
         rng = np.random.default_rng()
         if map_too and self.rand_map:
             self.params.seed = int(rng.integers(0, 2 ** 31 - 1))
@@ -247,14 +279,19 @@ class Backend(CondMixin):
         self.save_settings()
         if self.session is not None and not self.session.done:
             self.finish_test('재시작', show=False)
+        self._perf('설정 저장·시험 종료')
         if self.eth is not None:
             self.eth.stop()
             self.eth = None
+        self._perf('엔진 정지')
         self.applied = self._cond()
         self.changed = True
         cfg = self._make_cfg()
         self.log(('맵·' if map_too else '') + f'시나리오 생성 중... (맵 시드 {self.params.seed}, 시나리오 시드 {self.sparams.seed})')
-        self.build_future = self.pool.submit(self._build_job, cfg, map_too or self.model is None, self.model, self.parts)
+        mt = map_too or self.model is None
+        self._pending_map_seq = self.map_seq + (1 if mt else 0)
+        self.build_future = self.pool.submit(self._build_job, cfg, mt, self.model, self.parts,
+                                             self._pending_map_seq, self.world_seq + 1)
 
     def poll_build(self):
         """생성 완료 → 엔진 시작, (js, origin, lane, 맵 정보) 반환."""
@@ -273,6 +310,8 @@ class Backend(CondMixin):
             self.engine.close()
         self.model, self.parts, self.engine, self.origin = model, parts, eng, origin
         self.world_seq += 1
+        self.map_seq = self._pending_map_seq
+        self.t_built = time.perf_counter() - getattr(self, 't_rebuild', time.perf_counter())
         ros_step = self.ros.attach(eng, cfg) if self.ros is not None else None
         self.session = None
         if self.mode == 'test':
@@ -307,7 +346,11 @@ class Backend(CondMixin):
 
     def release_hold(self):
         """화면(Godot)이 새 장면을 다 불러옴 → 엔진 출발 (시험은 화면에 보이는 순간 t=0 부터)."""
+        self._clean_scene_cache()
         if self.hold:
+            if os.environ.get('BEACONSIM_PERF'):
+                print(f'PERF 재시작 → 엔진 출발 {time.perf_counter() - getattr(self, "t_rebuild", 0):.2f} s '
+                      f'(생성 {getattr(self, "t_built", 0):.2f} s)', flush=True)
             self.hold = False
             if self.eth is not None:
                 self.eth.paused = self.paused
@@ -477,7 +520,7 @@ class Server:
         self.cam_path = os.path.join(shm, f'beaconsim_view_{os.getpid()}.rgb')
         cmd = [godot_bin(), '--path', project_dir(), '--resolution', f'{window[0]}x{window[1]}', '--',
                '--client', f'--port={self.port}', *extra]
-        self.proc = subprocess.Popen(cmd)
+        self.proc = subprocess.Popen(cmd, env=godot_env())
 
     # ---- 송수신
     DROPPABLE = ('state', 'pc', 'radar')
@@ -558,7 +601,9 @@ class Server:
             self.send_values()
         elif t == 'cam_done':
             self._on_cam_done(m)
-        elif t == 'world_ready' and int(m.get('seq', -1)) == be.world_seq:
+        elif t == 'world_ready' and os.environ.get('BEACONSIM_PERF'):
+            print(f'PERF   world_ready 받음 {time.time():.3f} (seq {m.get("seq")} / {be.world_seq})', flush=True)
+        if t == 'world_ready' and int(m.get('seq', -1)) == be.world_seq:
             be.release_hold()
         elif t == 'perf':
             self.godot_fps = float(m.get('fps', 0))
@@ -858,7 +903,9 @@ class Server:
             w = self.be.poll_build()
             if w is not None:
                 self.last_pc_t = {}
+                self.be._perf('생성 끝')
                 self.send_world(*w)
+                self.be._perf(f'world 전송 (대기열 {len(self.txq)}) {time.time():.3f}')
                 self.send({'type': 'info', 'info': ui_schema.info(self.be)})
                 self.send_values()                              # 랜덤 시드가 바뀌었을 수 있음
             if self.settings_dirty and time.time() - self.settings_dirty > 0.5:

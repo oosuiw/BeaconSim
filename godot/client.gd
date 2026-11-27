@@ -171,11 +171,14 @@ func _net() -> void:
 		off += 8 + jl + bl
 		if typeof(msg) != TYPE_DICTIONARY:
 			continue
+		var t_h := Time.get_ticks_msec()
 		if msg["type"] == "state":          # 상태는 마지막 것만 적용
 			latest_state = msg
 			latest_bin = bin
 		else:
 			_handle(msg, bin)
+		if BeaconWorld.perf and Time.get_ticks_msec() - t_h > 50:
+			print("SLOW handle %s %d ms" % [msg["type"], Time.get_ticks_msec() - t_h])
 	if off > 0:
 		rx = rx.slice(off)
 	if not latest_state.is_empty():
@@ -285,12 +288,16 @@ func _apply_view() -> void:
 func _on_world(m: Dictionary, bin: PackedByteArray) -> void:
 	loading.visible = true
 	loading.text = "장면 불러오는 중..."
+	var t_w := Time.get_ticks_msec()
+	if BeaconWorld.perf:
+		print("WORLD 받음 %.3f" % Time.get_unix_time_from_system())
 	await get_tree().process_frame
-	if world != null:
-		world.queue_free()
-	world = BeaconWorld.new()
-	add_child(world)
-	world.build(m["scene"])
+	if world == null:
+		world = BeaconWorld.new()
+		add_child(world)
+	var reused: bool = world.load_scene(m["scene"])          # 같은 맵이면 도로·지형은 그대로 두고 차량·환경만 새로
+	if BeaconWorld.perf:
+		print("WORLD 정적 장면 재사용 ", reused)
 	world_seq = int(m["seq"])
 	world_msg = m
 	veh_dims = m["veh_dims"]
@@ -319,7 +326,13 @@ func _on_world(m: Dictionary, bin: PackedByteArray) -> void:
 	lbl_acc.position = ap + Vector3(0, 6.6, 0)
 	loading.visible = false
 	_preset("beacon")
+	BeaconWorld.tlog("구성 끝", t_w)
 	await get_tree().process_frame
+	BeaconWorld.tlog("첫 화면", t_w)
+	await get_tree().process_frame
+	BeaconWorld.tlog("둘째 화면", t_w)
+	if BeaconWorld.perf:
+		print("WORLD 준비 보냄 %.3f" % Time.get_unix_time_from_system())
 	_send({"type": "world_ready", "seq": world_seq})        # 백엔드: 이제 엔진 출발
 
 func _set_main_env() -> void:
@@ -744,7 +757,12 @@ func _toggle_pause() -> void:
 	_send({"type": "pause", "value": not st.get("paused", false)})
 
 func _process(dt: float) -> void:
+	if BeaconWorld.perf and dt > 0.25:
+		print("SLOW frame %.0f ms at %.3f" % [dt * 1000, Time.get_unix_time_from_system()])
+	var t_net := Time.get_ticks_msec()
 	_net()
+	if BeaconWorld.perf and Time.get_ticks_msec() - t_net > 100:
+		print("SLOW net %d ms" % (Time.get_ticks_msec() - t_net))
 	_drive(dt)
 	perf_t += dt
 	if perf_t > 2.0:

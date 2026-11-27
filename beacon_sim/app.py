@@ -402,8 +402,9 @@ class App(StartMixin):
             root = os.path.join(CACHE_DIR, 'godot_scene')
             if os.path.isdir(root):                       # 이전 실행이 남긴 장면 (약 40MB씩) 정리
                 for d in os.listdir(root):
-                    if d != str(os.getpid()):
-                        shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+                    pid = d.split('_')[0]
+                    if d != str(os.getpid()) and not (pid.isdigit() and os.path.exists(f'/proc/{pid}')):
+                        shutil.rmtree(os.path.join(root, d), ignore_errors=True)   # 끝난 프로세스 것만
             out = os.path.join(root, str(os.getpid()))
             _, js, origin = godot_link.export_scene(eng, out, self.base_cfg['camera'], cam.Wr, cam.Hr, cam.K[1, 1])
             return eng, godot_link.GodotLink(js, origin, self.T_b_opt, hidden=True, log=self.log)

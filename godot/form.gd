@@ -42,7 +42,14 @@ func _init(host_: Control, tab_box_: Container, body_: VBoxContainer, scroll_: S
 	host.add_child(dir_dialog)
 
 # ------------------------------------------------------------------ 탭
+var tabs_sig := ""
+
 func set_tabs(tabs: Array) -> void:
+	var sig := JSON.stringify(tabs)
+	if sig == tabs_sig:                 # 같은 정의면 다시 만들지 않음
+		return
+	tabs_sig = sig
+	var tp := Time.get_ticks_msec()
 	var sc := scroll.scroll_vertical if scroll else 0
 	var cur_id := ""
 	if cur_tab < tab_bodies.size():
@@ -78,18 +85,23 @@ func set_tabs(tabs: Array) -> void:
 		b.pressed.connect(func(): select_tab(i))
 		tab_box.add_child(b)
 		tab_btns.append(b)
+		# 화면 트리 밖에서 다 만든 뒤 한 번에 붙인다 (트리 안에서 하나씩 붙이면 매번 테마 전파·크기 계산 → 수 초)
 		var tb := VBoxContainer.new()
 		tb.add_theme_constant_override("separation", 8)
 		tb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tb.set_meta("id", str(t["id"]))
-		body.add_child(tb)
-		tab_bodies.append(tb)
+		tb.visible = false
 		for c in t["cards"]:
 			card_or_item(tb, c)
+		tab_bodies.append(tb)
 	select_tab(keep, false)
 	set_values(vals, true)
 	set_info(info)
-	apply_bold(host)
+	for tb in tab_bodies:
+		apply_bold(tb)
+		body.add_child(tb)
+	if OS.get_environment("BEACONSIM_PERF") != "":
+		print("FORM 탭 %d개 생성 %d ms" % [tabs.size(), Time.get_ticks_msec() - tp])
 	if scroll:
 		await host.get_tree().process_frame
 		scroll.scroll_vertical = sc

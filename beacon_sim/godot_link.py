@@ -1,7 +1,7 @@
 """Godot 렌더러 연동 (카메라 시제품).
 
 파이썬 엔진(도로·교통·시나리오)은 그대로 두고, 카메라 영상만 Godot 4 (Forward+)로 그린다.
-  1) export_scene(): 정적 장면 + 차량 원형 + 비콘 부품 → scene.glb, 광원·카메라·환경 → scene.json
+  1) export_scene(): 정적 장면(맵·비콘) → static.glb (맵마다 한 번), 차량 원형 → vehicles.glb, 광원·카메라·환경 → scene.json
   2) GodotLink: Godot 프로세스 실행, 프레임마다 상태(카메라·비콘·차량 포즈)를 UDP JSON 으로 보내고
      캡처 요청 시 Godot 이 PNG 를 쓰면 응답을 받는다.
 좌표: map(X 동, Y 북, Z 위) → glTF/Godot(x=X, y=Z, z=-Y), 원점은 맵 시작점으로 옮겨 float 정밀도 확보.
@@ -133,25 +133,47 @@ def _vkey(spec):
     return f'{spec.kind}_{spec.length:.2f}_{spec.width:.2f}_{spec.height:.2f}'
 
 
-def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy):
-    """엔진의 현재 맵·시나리오 → out_dir/scene.glb, scene.json. 반환: (glb, json 경로, origin)."""
+def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy, static_path=None, static_id=None):
+    """엔진의 현재 맵·시나리오 → 정적 장면 glb (맵·비콘) + out_dir/vehicles.glb (차량 원형) + out_dir/scene.json.
+    static_path 를 주면 그 파일이 이미 있을 때 다시 쓰지 않는다 (같은 맵으로 재시작 → Godot 도 정적 장면을 재사용).
+    반환: (정적 glb, json 경로, origin)."""
     os.makedirs(out_dir, exist_ok=True)
     m = eng.model
     origin = np.array(m.point(0.0, 0.0), float)
+    if static_path is None:
+        static_path = os.path.join(out_dir, 'static.glb')
+        static_id = static_id or f'{out_dir}:{os.getpid()}'
+        write_static = True
+    else:
+        write_static = not os.path.exists(static_path)
+    if write_static:
+        g = Glb()
+        roots = []
+        # 정적 장면: 클래스별 합치기
+        by_cls = {}
+        for p in eng.parts:
+            by_cls.setdefault(p.cls, []).append(p)
+        for cls, ps in by_cls.items():
+            vs, fs, n0 = [], [], 0
+            for p in ps:
+                vs.append(to_g(p.v, origin))
+                fs.append(p.f + n0)
+                n0 += len(p.v)
+            mi = g.mesh(cls, np.concatenate(vs), np.concatenate(fs), cls, ps[0].color, smooth=cls in SMOOTH)
+            roots.append(g.node(f'static_{cls}', mi))
+        # 비콘 부품 (base_link 기준, 카메라 하우징 제외)
+        rk = []
+        for name, (v, f) in load_robot_parts().items():
+            if name == 'camera':
+                continue
+            rk.append(g.node(f'robot_{name}', g.mesh(f'robot_{name}', np.asarray(v) @ C.T, f, f'robot_{name}',
+                                                     ROBOT_PART_COLORS.get(name, (0.6, 0.6, 0.6)))))
+        roots.append(g.node('robot', None, rk))
+        tmp = static_path + '.tmp'
+        g.write(tmp, roots)
+        os.replace(tmp, static_path)
     g = Glb()
     roots = []
-    # 정적 장면: 클래스별 합치기
-    by_cls = {}
-    for p in eng.parts:
-        by_cls.setdefault(p.cls, []).append(p)
-    for cls, ps in by_cls.items():
-        vs, fs, n0 = [], [], 0
-        for p in ps:
-            vs.append(to_g(p.v, origin))
-            fs.append(p.f + n0)
-            n0 += len(p.v)
-        mi = g.mesh(cls, np.concatenate(vs), np.concatenate(fs), cls, ps[0].color, smooth=cls in SMOOTH)
-        roots.append(g.node(f'static_{cls}', mi))
     # 차량 원형 (차체 + 전조등 + 후미등), 로컬 좌표 → Godot 기저
     protos, proto_idx = [], {}
     specs = list(eng.traffic.specs) + [sp for sp, _ in eng.accident]
@@ -168,16 +190,8 @@ def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy):
             kids.append(g.node(f'lamp_{kind}_{j}', g.mesh(f'lamp_{proto_idx[k]}_{j}', lv @ C.T, lf, f'lamp_{kind}', col)))
         roots.append(g.node(f'proto_{proto_idx[k]}', body, kids))
         protos.append({'key': k, 'kind': sp.kind, 'length': sp.length, 'width': sp.width, 'height': sp.height})
-    # 비콘 부품 (base_link 기준, 카메라 하우징 제외)
-    rk = []
-    for name, (v, f) in load_robot_parts().items():
-        if name == 'camera':
-            continue
-        rk.append(g.node(f'robot_{name}', g.mesh(f'robot_{name}', np.asarray(v) @ C.T, f, f'robot_{name}',
-                                                 ROBOT_PART_COLORS.get(name, (0.6, 0.6, 0.6)))))
-    roots.append(g.node('robot', None, rk))
-    glb = os.path.join(out_dir, 'scene.glb')
-    g.write(glb, roots)
+    vglb = os.path.join(out_dir, 'vehicles.glb')
+    g.write(vglb, roots)
     # 광원: 가로등(야간), 터널등(항상)
     street = [to_g(p, origin).round(3).tolist() for p in scene.street_lights(m)]
     tunnel = []
@@ -187,6 +201,8 @@ def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy):
                 tunnel.append(to_g(m.point(s, t, scene.TUNNEL_WALL_H + 1.5), origin).round(3).tolist())
     env = eng.env
     info = {
+        'static_glb': os.path.abspath(static_path), 'static_id': static_id or os.path.abspath(static_path),
+        'vehicles_glb': os.path.abspath(vglb),
         'origin': origin.tolist(),
         'camera': {'width': Wr, 'height': Hr, 'vfov_deg': float(np.degrees(2 * np.arctan(Hr / 2.0 / fy))),
                    'near': cam_cfg['near'], 'far': cam_cfg['far']},
@@ -203,7 +219,7 @@ def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy):
     js = os.path.join(out_dir, 'scene.json')
     with open(js, 'w') as fh:
         json.dump(info, fh)
-    return glb, js, origin
+    return static_path, js, origin
 
 
 def available():
@@ -236,6 +252,23 @@ def project_dir(camera=False):
     return dst
 
 
+def godot_env():
+    """Godot 프로세스 환경: 시스템 폰트가 없는 fontconfig 설정.
+    Godot 4 는 한글·한자 단어를 배치할 때마다 시스템 폰트를 fontconfig 로 찾는데(FcFontMatch), 폰트가 수천 개인 PC 에서는
+    단어 하나에 10 ms 가 넘게 걸려 UI 를 만드는 데 수 초가 걸린다. 앱은 자체 폰트(Pretendard, Font Awesome)만 쓴다."""
+    from .common import CACHE_DIR
+    d = os.path.join(CACHE_DIR, 'godot_fontconfig')
+    conf = os.path.join(d, 'fonts.conf')
+    if not os.path.exists(conf):
+        os.makedirs(os.path.join(d, 'cache'), exist_ok=True)
+        with open(conf, 'w') as f:
+            f.write('<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n'
+                    f'<fontconfig>\n  <cachedir>{os.path.join(d, "cache")}</cachedir>\n</fontconfig>\n')
+    env = dict(os.environ, FONTCONFIG_FILE=conf)
+    env.pop('FONTCONFIG_PATH', None)
+    return env
+
+
 def _free_port():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(('127.0.0.1', 0))
@@ -265,7 +298,7 @@ class GodotLink:
                f'--scene={scene_json}', f'--port={port}', f'--reply={self.rx.getsockname()[1]}']
         if hidden:
             cmd.append('--hidden')
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL if hidden else subprocess.PIPE,
+        self.proc = subprocess.Popen(cmd, env=godot_env(), stdout=subprocess.DEVNULL if hidden else subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True)
         self._wait('ready', 60)
 

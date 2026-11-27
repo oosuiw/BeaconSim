@@ -1,8 +1,16 @@
 extends Node3D
 
 ## 정적 장면(glb) + 재질 + 하늘·안개·후처리 + 가로등·터널등 + 차량·비콘. 카메라 전용 렌더러와 Godot 앱이 함께 쓴다.
+## 두 부분: 정적(static_root: 도로·지형·터널·비콘·등기구 모양·터널등) / 동적(dyn: 차량·하늘·태양·안개·가로등 빛·비/눈).
+## load(): 맵이 같으면(static_id) 정적 부분을 그대로 두고 동적 부분만 다시 만든다 → 재시작이 빠르다.
 
 var info: Dictionary
+var static_id := ""
+var static_root: Node3D
+var dyn: Node3D
+var static_meshes: Array = []   # [MeshInstance3D, 분류, 기본색]
+var street_head_mat: StandardMaterial3D
+static var noise_cache := {}
 var world_env: WorldEnvironment
 var sun: DirectionalLight3D
 var robot: Node3D
@@ -23,11 +31,54 @@ static func xf_at(f: PackedFloat32Array, k: int) -> Transform3D:
 	return Transform3D(Basis(Vector3(f[o], f[o + 4], f[o + 8]), Vector3(f[o + 1], f[o + 5], f[o + 9]),
 		Vector3(f[o + 2], f[o + 6], f[o + 10])), Vector3(f[o + 3], f[o + 7], f[o + 11]))
 
+static var perf := OS.get_environment("BEACONSIM_PERF") != ""
+
+static func tlog(what: String, t0: int) -> int:
+	var t := Time.get_ticks_msec()
+	if perf:
+		print("WORLD %s %d ms" % [what, t - t0])
+	return t
+
 func build(scene_json: String) -> void:
+	load_scene(scene_json)
+
+## 장면 불러오기. 반환: 정적 부분을 재사용했으면 true
+func load_scene(scene_json: String) -> bool:
+	var t := Time.get_ticks_msec()
 	info = JSON.parse_string(FileAccess.get_file_as_string(scene_json))
-	_load_scene(scene_json.get_base_dir().path_join("scene.glb"))
+	var sid: String = str(info.get("static_id", ""))
+	var reuse := static_root != null and sid != "" and sid == static_id
+	if not reuse:
+		if static_root:
+			remove_child(static_root)
+			static_root.queue_free()
+		static_root = Node3D.new()
+		add_child(static_root)
+		static_meshes.clear()
+		_load_static(str(info["static_glb"]))
+		_build_static_lights(info)
+		static_id = sid
+		t = tlog("정적 장면(glb)", t)
+	if dyn:
+		remove_child(dyn)
+		dyn.queue_free()
+	dyn = Node3D.new()
+	add_child(dyn)
+	protos.clear()
+	slots.clear()
+	slot_lights.clear()
+	acc_lights.clear()
+	shown = {}
+	var wet: float = float(info["env"]["wet"])
+	for sm in static_meshes:                 # 노면 젖음 등 환경에 따라 재질만 바꿈
+		(sm[0] as MeshInstance3D).material_override = _mat(sm[1], sm[2], wet)
+	t = tlog("재질", t)
+	_load_vehicles(str(info["vehicles_glb"]))
+	t = tlog("차량", t)
 	_build_env(info["env"])
 	_build_lights(info)
+	tlog("환경·조명", t)
+	return reuse
 
 ## 차량: 슬롯 번호 배열 + 변환(12개씩)
 func set_vehicles(idx: PackedInt32Array, T: PackedFloat32Array) -> void:
@@ -59,6 +110,14 @@ static func follow_weather(p: GPUParticles3D, cam: Camera3D) -> void:
 
 # ------------------------------------------------------------------ 재질
 func _noise_tex(freq: float, normal := false, lo := Color(0.35, 0.35, 0.35), hi := Color(0.65, 0.65, 0.65), seed_ := 1) -> NoiseTexture2D:
+	var key := "%s|%s|%s|%s|%s" % [freq, normal, lo, hi, seed_]
+	if noise_cache.has(key):                 # 한 번 만든 노이즈 텍스처는 재사용 (재시작 때 다시 만들지 않음)
+		return noise_cache[key]
+	var t := _make_noise(freq, normal, lo, hi, seed_)
+	noise_cache[key] = t
+	return t
+
+func _make_noise(freq: float, normal: bool, lo: Color, hi: Color, seed_: int) -> NoiseTexture2D:
 	var n := FastNoiseLite.new()
 	n.seed = seed_
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
@@ -120,16 +179,20 @@ func _mat(cls: String, base: Color, wet: float) -> StandardMaterial3D:
 			m.emission_energy_multiplier = 0.15
 	return m
 
-func _load_scene(path: String) -> void:
+static func _gltf(path: String) -> Node:
 	var doc := GLTFDocument.new()
 	var st := GLTFState.new()
 	var err := doc.append_from_file(path, st)
 	if err != OK:
 		push_error("glb 로드 실패: %s" % path)
+		return null
+	return doc.generate_scene(st)
+
+func _load_static(path: String) -> void:
+	var root := _gltf(path)
+	if root == null:
 		return
-	var root := doc.generate_scene(st)
-	add_child(root)
-	var wet: float = float(info["env"]["wet"])
+	static_root.add_child(root)
 	for n in root.get_children():
 		var nm := String(n.name)
 		if nm.begins_with("static_") and n is MeshInstance3D:
@@ -139,7 +202,7 @@ func _load_scene(path: String) -> void:
 			var sm := mi.mesh.surface_get_material(0)
 			if sm is BaseMaterial3D:
 				base = (sm as BaseMaterial3D).albedo_color
-			mi.material_override = _mat(cls, base, wet)
+			static_meshes.append([mi, cls, base])
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cls != "terrain" else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			if cls == "tunnel":                   # 레이어: 1 도로 등, 2 터널, 4 지형, 5 차량, 6 비콘 (메인 뷰에서 켜고 끔)
 				mi.layers = 2
@@ -148,6 +211,13 @@ func _load_scene(path: String) -> void:
 	robot = root.find_child("robot", false, false)
 	if robot:
 		set_layers(robot, 32)
+
+func _load_vehicles(path: String) -> void:
+	var root := _gltf(path)
+	if root == null:
+		return
+	root.visible = false
+	dyn.add_child(root)
 	for i in range(info["protos"].size()):
 		var p: Node3D = root.find_child("proto_%d" % i, false, false)
 		p.visible = false
@@ -169,7 +239,7 @@ static func set_layers(n: Node, layer: int) -> void:
 func _make_vehicle(pi: int, col: Array, hazard := false) -> Node3D:
 	var v: Node3D = protos[pi].duplicate()
 	v.visible = true
-	add_child(v)
+	dyn.add_child(v)
 	var paint := StandardMaterial3D.new()
 	paint.albedo_color = Color(col[0], col[1], col[2])
 	paint.metallic = 0.55
@@ -244,7 +314,7 @@ func _build_env(e: Dictionary) -> void:
 	sun = DirectionalLight3D.new()
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 250.0
-	add_child(sun)
+	dyn.add_child(sun)
 	var overcast := 0.0 if wx == "clear" else clampf(0.4 + 0.6 * k, 0.0, 1.0)
 	match tod:
 		"day":
@@ -296,36 +366,23 @@ func _build_env(e: Dictionary) -> void:
 		env.ssr_depth_tolerance = 0.3
 	world_env = WorldEnvironment.new()
 	world_env.environment = env
-	add_child(world_env)
+	dyn.add_child(world_env)
 
-func _build_lights(d: Dictionary) -> void:
-	var on: bool = bool(d["env"]["street_lights"])
+## 정적: 가로등 등기구 모양(밤에만 빛남 → 재질은 동적에서 조절), 터널등(항상 켜짐)
+func _build_static_lights(d: Dictionary) -> void:
 	var head_mesh := BoxMesh.new()
 	head_mesh.size = Vector3(0.7, 0.12, 0.3)
-	var head_mat := StandardMaterial3D.new()
-	head_mat.emission_enabled = true
-	head_mat.emission = Color(1.0, 0.86, 0.62)
-	head_mat.emission_energy_multiplier = 6.0 if on else 0.0
-	head_mat.albedo_color = Color(0.8, 0.8, 0.8)
-	head_mesh.material = head_mat
+	street_head_mat = StandardMaterial3D.new()
+	street_head_mat.emission_enabled = true
+	street_head_mat.emission = Color(1.0, 0.86, 0.62)
+	street_head_mat.albedo_color = Color(0.8, 0.8, 0.8)
+	head_mesh.material = street_head_mat
 	for p in d["street_lights"]:
-		var pos := Vector3(p[0], p[1], p[2])
 		var mi := MeshInstance3D.new()
 		mi.mesh = head_mesh
-		mi.position = pos
+		mi.position = Vector3(p[0], p[1], p[2])
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		add_child(mi)
-		if on:
-			var sl := SpotLight3D.new()
-			sl.position = pos - Vector3(0, 0.15, 0)
-			sl.rotation_degrees = Vector3(-90, 0, 0)
-			sl.spot_angle = 62.0
-			sl.spot_range = 32.0
-			sl.spot_attenuation = 0.7
-			sl.light_energy = 12.0
-			sl.light_color = Color(1.0, 0.86, 0.62)
-			sl.light_volumetric_fog_energy = 2.0
-			add_child(sl)
+		static_root.add_child(mi)
 	var tmesh := BoxMesh.new()
 	tmesh.size = Vector3(1.2, 0.08, 0.25)
 	var tmat := StandardMaterial3D.new()
@@ -339,14 +396,31 @@ func _build_lights(d: Dictionary) -> void:
 		mi.mesh = tmesh
 		mi.position = pos
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		add_child(mi)
+		static_root.add_child(mi)
 		var ol := OmniLight3D.new()
 		ol.position = pos - Vector3(0, 0.3, 0)
 		ol.omni_range = 16.0
 		ol.omni_attenuation = 1.2
 		ol.light_energy = 2.5
 		ol.light_color = Color(1.0, 0.75, 0.45)
-		add_child(ol)
+		static_root.add_child(ol)
+
+## 동적: 가로등 빛(야간), 차량 등화 세기
+func _build_lights(d: Dictionary) -> void:
+	var on: bool = bool(d["env"]["street_lights"])
+	street_head_mat.emission_energy_multiplier = 6.0 if on else 0.0
+	if on:
+		for p in d["street_lights"]:
+			var sl := SpotLight3D.new()
+			sl.position = Vector3(p[0], p[1], p[2]) - Vector3(0, 0.15, 0)
+			sl.rotation_degrees = Vector3(-90, 0, 0)
+			sl.spot_angle = 62.0
+			sl.spot_range = 32.0
+			sl.spot_attenuation = 0.7
+			sl.light_energy = 12.0
+			sl.light_color = Color(1.0, 0.86, 0.62)
+			sl.light_volumetric_fog_energy = 2.0
+			dyn.add_child(sl)
 	for key in mats:            # 차량 등화 세기
 		var m: StandardMaterial3D = mats[key]
 		var head: bool = key.begins_with("h")
@@ -402,6 +476,6 @@ func make_weather() -> GPUParticles3D:
 	rain.local_coords = false
 	rain.preprocess = 3.0
 	rain.visibility_aabb = AABB(Vector3(-40, -40, -40), Vector3(80, 60, 80))
-	add_child(rain)
+	dyn.add_child(rain)
 	return rain
 
