@@ -31,6 +31,7 @@ from .common import (CACHE_DIR, ROOT, T_CAMLINK_OPTICAL, apply_to_sim_config, ha
                      sensor_mounts)
 from .engine import EngineThread, SimEngine
 from .environment import EnvParams
+from .gnss import GnssParams
 from .evaluate import subscribe_eval
 from .modes import SETTINGS_VER, CondMixin, default_test
 from .session import RegressRun, TestSession, save_regression
@@ -86,6 +87,7 @@ class Backend(CondMixin):
         self.sparams = _pick(ScenarioParams, c.get('scenario', {}))
         self.tparams = _pick(TrafficParams, c.get('traffic', {}))
         self.eparams = _pick(EnvParams, c.get('environment', {}))
+        self.gparams = _pick(GnssParams, c.get('gnss', {}))
         self.rand_map, self.rand_scn = False, True
         self.export_dir = os.path.join(os.path.expanduser('~'), 'BeaconSim_maps')
         self.export_pcd = True
@@ -137,9 +139,10 @@ class Backend(CondMixin):
             d = {}
         from .modes import migrate_settings
         migrate_settings(d)
-        ysec = {'params': 'map', 'scenario': 'scenario', 'traffic': 'traffic', 'env': 'environment'}
+        ysec = {'params': 'map', 'scenario': 'scenario', 'traffic': 'traffic', 'env': 'environment', 'gnss': 'gnss'}
         for key, cls, attr in [('params', RoadParams, 'params'), ('scenario', ScenarioParams, 'sparams'),
-                               ('traffic', TrafficParams, 'tparams'), ('env', EnvParams, 'eparams')]:
+                               ('traffic', TrafficParams, 'tparams'), ('env', EnvParams, 'eparams'),
+                               ('gnss', GnssParams, 'gparams')]:
             if key in d:                     # 저장된 설정에 없는 (새로 생긴) 키는 sim.yaml 값
                 setattr(self, attr, _pick(cls, {**self.base_cfg.get(ysec[key], {}), **d[key]}))
         self.rand_map, self.rand_scn = d.get('rand_map', False), d.get('rand_scn', True)
@@ -171,7 +174,7 @@ class Backend(CondMixin):
         except Exception:     # noqa: BLE001
             d = {}
         d.update(params=self.params.to_dict(), scenario=self.sparams.to_dict(), traffic=self.tparams.to_dict(),
-                 env=self.eparams.to_dict(), rand_map=self.rand_map, rand_scn=self.rand_scn, export_dir=self.export_dir,
+                 env=self.eparams.to_dict(), gnss=self.gparams.to_dict(), rand_map=self.rand_map, rand_scn=self.rand_scn, export_dir=self.export_dir,
                  mode=self.mode_sel, test=self.test, spawn=self.spawn, settings_ver=SETTINGS_VER)
         os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
         with open(SETTINGS, 'w') as f:
@@ -231,6 +234,7 @@ class Backend(CondMixin):
         cfg = copy.deepcopy(self.base_cfg)
         cfg.update(map=self.params.to_dict(), scenario=self.sparams.to_dict(), traffic=self.tparams.to_dict(),
                    environment=self.eparams.to_dict())
+        cfg['gnss'].update(self.gparams.to_dict())
         if self.gnss_override:
             cfg['gnss'].update(self.gnss_override)
             cfg['gnss_override'] = dict(self.gnss_override)
@@ -1046,7 +1050,7 @@ def main():
     for kv in a.set:
         k, v = kv.split('=', 1)
         grp, name = k.split('.')
-        obj = {'map': be.params, 'scn': be.sparams, 'traffic': be.tparams, 'env': be.eparams}[grp]
+        obj = {'map': be.params, 'scn': be.sparams, 'traffic': be.tparams, 'env': be.eparams, 'gnss': be.gparams}[grp]
         cur = getattr(obj, name)
         setattr(obj, name, (v.lower() in ('1', 'true', 'yes')) if isinstance(cur, bool) else type(cur)(v))
         if grp == 'scn' and name == 'seed':

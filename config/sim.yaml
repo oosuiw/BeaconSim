@@ -156,6 +156,13 @@ gnss:
   t_single_max: 3.0
   t_conv_min: 10.0        # FLOAT → FIX 재수렴 [s]
   t_conv_max: 60.0
+  # 실환경 열화 (0 = 끔). 앱 환경 탭 'GNSS' 카드에서 바로 조절
+  sigma_scale: 1.5        # 상태별 표준편차 배율 (FIX 1.5 cm · FLOAT 30 cm · SINGLE 1.5 m 기준)
+  drop_rate: 0.5          # 개활지 FIX 끊김 [회/분] → FLOAT 로 떨어졌다 재수렴
+  outlier_rate: 0.3       # 다중경로 튐 [회/분] (1~5 s)
+  outlier_m: 1.0          # 튐 크기 [m]
+  bias_m: 0.0             # 고정 오프셋 [m]
+  latency_s: 0.05         # 출력 지연 [s]
 
 sim:
   step_hz: 100            # 코어 루프(시계, 기구학, TF)

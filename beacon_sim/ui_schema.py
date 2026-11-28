@@ -32,7 +32,7 @@ VIEW_DEFAULT = dict(pandar=True, tele=True, radar=True, radar_fov=False, gnss=Tr
                     vehicles=True, scc=True, robot=True, markers=True, lanelet=False, terrain=True, tunnel=True,
                     auto_roof=True, env_view=True, legend=True, pandar_color=0, ui_zoom=0.0, log_filter=0)
 
-GROUPS = {'map': 'params', 'scn': 'sparams', 'traffic': 'tparams', 'env': 'eparams'}
+GROUPS = {'map': 'params', 'scn': 'sparams', 'traffic': 'tparams', 'env': 'eparams', 'gnss': 'gparams'}
 
 
 def _f(k, label, lo, hi, fmt='%.2f', step=0.01, **kw):
@@ -178,7 +178,19 @@ def tabs(be, mode=None, start=False):
     ]
     if not start and mode != 'test':
         tab_traffic.insert(0, _spawn_card())
-    tab_env = [
+    gnss_card = _card('GNSS (실환경 열화)', 'map', [
+        dict(t='note', text='바로 반영 (재시작 불필요). 0 = 끔'),
+        _f('gnss.sigma_scale', '오차 크기 배율', 0, 10, '%.1f×', 0.1, tip='상태별 표준편차 배율 (FIX 1.5 cm · FLOAT 30 cm · SINGLE 1.5 m 기준)'),
+        _f('gnss.drop_rate', '개활지 FIX 끊김', 0, 10, '%.1f 회/분', 0.1, tip='고가·육교·대형차 가림 → FLOAT 로 떨어졌다 재수렴'),
+        _f('gnss.outlier_rate', '다중경로 튐', 0, 10, '%.1f 회/분', 0.1, tip='1~5 초 동안 위치가 튐. 수신기가 알리는 정확도는 그대로'),
+        _f('gnss.outlier_m', '튐 크기', 0, 10, '%.1f m', 0.1),
+        _f('gnss.bias_m', '고정 오프셋', 0, 3, '%.2f m', 0.01, tip='기준국 좌표·측지계 불일치'),
+        _f('gnss.latency_s', '출력 지연', 0, 0.5, '%.2f s', 0.01),
+        dict(t='group', label='상태 전이', items=[
+            _f('gnss.t_conv_min', 'FIX 재수렴 최소', 1, 120, '%.0f s', 1),
+            _f('gnss.t_conv_max', 'FIX 재수렴 최대', 1, 180, '%.0f s', 1),
+            _f('gnss.rate_hz', '출력 주기', 1, 20, '%.0f Hz', 1)])], 'warn')
+    tab_env = [gnss_card,
         _card('시간대 · 날씨', 'cloud', [
             dict(t='seg', k='env.time_of_day', opts=[['random', '랜덤'], ['day', '낮'], ['dusk', '황혼'], ['night', '밤']]),
             dict(t='seg', k='env.weather', opts=[['random', '랜덤'], ['clear', '맑음'], ['rain', '비'], ['fog', '안개'],
@@ -435,6 +447,13 @@ def set_value(be, key, v):
             return True
         if grp == 'scn' and name == 'seed':
             be.rand_scn = False
+        if grp == 'gnss':
+            obj.t_conv_max = max(obj.t_conv_max, obj.t_conv_min)
+            if getattr(be, 'engine', None) is not None:          # GNSS 는 재시작 없이 바로
+                setattr(be.engine.gnss.gp, name, getattr(obj, name))
+                if isinstance(getattr(be, 'applied', None), dict) and 'gnss' in be.applied:
+                    be.applied['gnss'][name] = getattr(obj, name)
+            return False
         if grp == 'scn' and name in LIVE_LIGHT_KEYS and getattr(be, 'engine', None) is not None:
             be.engine.set_light_params(**{name: getattr(obj, name)})       # 조명은 재시작 없이 바로
             if isinstance(getattr(be, 'applied', None), dict) and 'scenario' in be.applied:
