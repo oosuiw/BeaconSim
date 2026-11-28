@@ -43,9 +43,9 @@ def _hesai_intensity(retro, cos_i, eid, rng, old):
         if not m.any():
             continue
         v = a * cos_i[m] ** k * np.exp(rng.normal(0, s, m.sum()))
-        if name.startswith('lane'):            # 마모(희미) 차선: 메시 반사율이 노면 쪽으로 섞인 만큼 노면 밝기로
-            w = np.clip((retro[m] - RETRO['road']) / max(RETRO[name] - RETRO['road'], 1e-6), 0.0, 1.0)
-            v = w * v + (1 - w) * road_i[m]
+        if name.startswith('lane'):            # 도색 밝기 배율 w (메시 반사율): < 1 노면 밝기 쪽으로 섞음, > 1 그만큼 밝게
+            w = np.clip((retro[m] - RETRO['road']) / max(RETRO[name] - RETRO['road'], 1e-6), 0.0, 3.5)
+            v = np.where(w <= 1, w * v + (1 - w) * road_i[m], w * v)
         out[m] = v + rng.normal(0, 1.0, m.sum())
     return out
 

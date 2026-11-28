@@ -280,27 +280,33 @@ def build_static(m: RoadModel):
 
 
 def _paint(m: RoadModel):
-    """차선 도색 메시. 상태가 나쁜 구간은 끊김/희소 처리하고, 희미한 구간은 반사율·색 대비를 낮춘 별도 파트."""
+    """차선 도색 메시. 상태가 나쁜 구간은 끊김/희소 처리하고, 밝기가 다른 구간은 반사율·색 대비를 바꾼 별도 파트.
+    밝기 배율 g: 1 = 기본, < 1 바램(노면 쪽으로), > 1 새 도색(더 밝음). 라이다 세기·raydrop·카메라 색 모두 g 를 따름."""
     p = m.params
     L = m.length
     hw = p.line_width / 2
     rng = np.random.default_rng(p.seed * 7 + 99)
     asphalt = np.array(COLOR['road'])
-    builders = {}                              # (cls, faded_level) → MeshBuilder
+    builders = {}                              # (cls, 밝기 배율 g) → MeshBuilder
     var = float(getattr(p, 'paint_var', 0.0))
     vrng = np.random.default_rng(p.seed * 7 + 131)  # 밝기 편차 전용 (기존 마모 난수 순서는 그대로)
 
-    def line_fade_fn():
-        """선 하나의 흐림 정도 f(s) 0~0.9: 바탕(선마다) + 느린 변화(파장 30~200 m 두 개)"""
+    def line_gain_fn():
+        """선 하나의 밝기 배율 g(s) = 바탕 × 느린 흐려짐 (파장 30~200 m 두 개).
+        바탕: 0.6·var 확률로 거의 지워진 선 U(0.03, 0.35), 나머지는 exp(N(0.5·var, 0.6·var)) (보통 ~ 새 도색).
+        var = 1 ≈ 실기 bag 4개 (정렬 좋은 bag: 한 장면 안 밝은 선 / 어두운 선 중앙값 8~10배, 선별 밝기 7 ~ 50~79)"""
         if var <= 0:
             return None
-        base = 0.0 if vrng.random() < 0.4 else vrng.uniform(0.0, 0.75 * var)
-        waves = [(vrng.uniform(0, 0.35 * var), vrng.uniform(30.0, 200.0), vrng.uniform(0, 2 * np.pi)) for _ in range(2)]
-        return lambda x: float(np.clip(base + sum(a * (0.5 + 0.5 * np.sin(2 * np.pi * x / lam + ph))
-                                                  for a, lam, ph in waves), 0.0, 0.9))
+        if vrng.random() < 0.6 * var:
+            base = vrng.uniform(0.03, 0.35)
+        else:
+            base = float(np.exp(vrng.normal(0.5 * var, 0.6 * var)))
+        waves = [(vrng.uniform(0, 0.25 * var), vrng.uniform(30.0, 200.0), vrng.uniform(0, 2 * np.pi)) for _ in range(2)]
+        return lambda x: float(np.clip(base * (1 - sum(a * (0.5 + 0.5 * np.sin(2 * np.pi * x / lam + ph))
+                                                       for a, lam, ph in waves)), 0.03, 3.3))
 
-    def mb_for(cls, fade):
-        key = (cls, round(fade, 1))
+    def mb_for(cls, g):
+        key = (cls, round(g, 1) if g <= 1 else round(g * 4) / 4)
         if key not in builders:
             builders[key] = MeshBuilder(m)
         return builders[key]
@@ -319,7 +325,7 @@ def _paint(m: RoadModel):
                 dashes = [(0.0, L)]
             segs = sorted((a, b, k, st) for sd, key, a, b, k, st in m.wear if sd == side and key == ln.key)
             t = side * ln.offset
-            lf = line_fade_fn()
+            lf = line_gain_fn()
 
             def cond_at(x):
                 for a, b, k, st in segs:
@@ -359,19 +365,19 @@ def _paint(m: RoadModel):
                         if b - a <= 0.05:
                             continue
                         if lf is None:
-                            mb_for(cls, fade).sweep(a, b, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=2.5)
+                            mb_for(cls, 1 - fade).sweep(a, b, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=2.5)
                             continue
                         n = max(1, int(np.ceil((b - a) / 5.0)))             # 5 m 토막마다 선 밝기 편차를 겹침
                         edges = np.linspace(a, b, n + 1)
                         for c0, c1 in zip(edges[:-1], edges[1:]):
-                            f = 1 - (1 - fade) * (1 - lf((c0 + c1) / 2))
-                            mb_for(cls, min(f, 0.95)).sweep(c0, c1, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=2.5)
+                            g = (1 - fade) * lf((c0 + c1) / 2)
+                            mb_for(cls, max(g, 0.03)).sweep(c0, c1, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=2.5)
     out = []
-    for (cls, fade), mb in sorted(builders.items()):
+    for (cls, g), mb in sorted(builders.items()):
         base = np.array(COLOR[cls])
-        col = tuple(base * (1 - fade) + asphalt * fade)
-        retro = RETRO[cls] * (1 - fade) + RETRO['road'] * fade
-        name = cls if fade == 0 else f'{cls}_faded{int(fade * 10)}'
+        col = tuple(np.clip(asphalt + (base - asphalt) * g, 0, 1))          # 밝은 새 도색은 더 하얗게 (상한 1)
+        retro = min(1.6, RETRO['road'] + (RETRO[cls] - RETRO['road']) * g)     # 새 도색 상한 약 3.3배
+        name = cls if g == 1 else f'{cls}_faded{int(round(g * 100))}'       # '_faded' = Godot 라벨에서 차선으로 묶는 표시
         part = mb.build(name, cls, color=col, retro=retro)
         if part is not None:
             out.append(part)
