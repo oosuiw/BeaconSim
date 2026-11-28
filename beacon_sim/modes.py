@@ -37,7 +37,7 @@ WHERE_KO = {'random': '랜덤', 'open': '개활지', 'tunnel_entry': '터널 입
 SIDE_KO = {'random': '랜덤', 'down': '하행', 'up': '상행'}
 
 
-SETTINGS_VER = 3       # app.json 형식: 2 = 센서타워 자동 펴기 기본 켬, 3 = SCC 상용 범위 기본값
+SETTINGS_VER = 4       # app.json 형식: 2 = 센서타워 자동 펴기 기본 켬, 3 = SCC 상용 범위 기본값, 4 = 도로변·도색 편차 기본값
 
 
 def migrate_settings(d):
@@ -52,6 +52,9 @@ def migrate_settings(d):
     if int(d.get('settings_ver', 0)) < 3 and isinstance(d.get('traffic'), dict):
         for k in [k for k in d['traffic'] if k.startswith('scc_')]:     # 예전 SCC 범위 → 새 기본값 (상용 범위 조사 반영)
             d['traffic'].pop(k)
+    if int(d.get('settings_ver', 0)) < 4 and isinstance(d.get('params'), dict):
+        for k in ('outer_rail', 'roadside_clutter', 'gutter_w', 'gutter_med_w', 'curb_h', 'paint_var'):
+            d['params'].pop(k, None)                    # 예전 기본값(없음) 대신 sim.yaml 의 도로변·도색 편차
     d['settings_ver'] = SETTINGS_VER
     return d
 

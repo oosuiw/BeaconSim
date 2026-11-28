@@ -13,6 +13,12 @@ map:
   wear_faded: 1.0
   wear_broken: 1.0
   wear_sparse: 1.0
+  paint_var: 0.5          # 도색 밝기 편차 0~1 (선마다 다른 밝기 + 선을 따라 서서히 흐려짐)
+  outer_rail: mixed       # 바깥 방호시설: guardrail | concrete | mixed (구간마다)
+  gutter_w: 0.5           # 바깥 측구 폭 [m] (방호시설 앞 콘크리트 띠, 0 = 없음)
+  gutter_med_w: 0.3       # 중앙분리대 쪽 측구 폭 [m]
+  curb_h: 0.12            # 가드레일 구간 연석 높이 [m]
+  roadside_clutter: 0.5   # 도로 밖 덤불 밀도 0~1
 
 # 2차 사고 예방 시나리오 (traffic.ScenarioParams). 비콘은 사고 차량 후미에 역방향으로 '배치'만 되고,
 # 이동은 상위 제어기가 /cmd_vel 로 한다.

@@ -287,6 +287,17 @@ def _paint(m: RoadModel):
     rng = np.random.default_rng(p.seed * 7 + 99)
     asphalt = np.array(COLOR['road'])
     builders = {}                              # (cls, faded_level) → MeshBuilder
+    var = float(getattr(p, 'paint_var', 0.0))
+    vrng = np.random.default_rng(p.seed * 7 + 131)  # 밝기 편차 전용 (기존 마모 난수 순서는 그대로)
+
+    def line_fade_fn():
+        """선 하나의 흐림 정도 f(s) 0~0.9: 바탕(선마다) + 느린 변화(파장 30~200 m 두 개)"""
+        if var <= 0:
+            return None
+        base = 0.0 if vrng.random() < 0.4 else vrng.uniform(0.0, 0.75 * var)
+        waves = [(vrng.uniform(0, 0.35 * var), vrng.uniform(30.0, 200.0), vrng.uniform(0, 2 * np.pi)) for _ in range(2)]
+        return lambda x: float(np.clip(base + sum(a * (0.5 + 0.5 * np.sin(2 * np.pi * x / lam + ph))
+                                                  for a, lam, ph in waves), 0.0, 0.9))
 
     def mb_for(cls, fade):
         key = (cls, round(fade, 1))
@@ -308,6 +319,7 @@ def _paint(m: RoadModel):
                 dashes = [(0.0, L)]
             segs = sorted((a, b, k, st) for sd, key, a, b, k, st in m.wear if sd == side and key == ln.key)
             t = side * ln.offset
+            lf = line_fade_fn()
 
             def cond_at(x):
                 for a, b, k, st in segs:
@@ -344,8 +356,16 @@ def _paint(m: RoadModel):
                                 x += 4.0 + 6.0 * st
                             pieces = out
                     for a, b in pieces:
-                        if b - a > 0.05:
+                        if b - a <= 0.05:
+                            continue
+                        if lf is None:
                             mb_for(cls, fade).sweep(a, b, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=2.5)
+                            continue
+                        n = max(1, int(np.ceil((b - a) / 5.0)))             # 5 m 토막마다 선 밝기 편차를 겹침
+                        edges = np.linspace(a, b, n + 1)
+                        for c0, c1 in zip(edges[:-1], edges[1:]):
+                            f = 1 - (1 - fade) * (1 - lf((c0 + c1) / 2))
+                            mb_for(cls, min(f, 0.95)).sweep(c0, c1, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=2.5)
     out = []
     for (cls, fade), mb in sorted(builders.items()):
         base = np.array(COLOR[cls])

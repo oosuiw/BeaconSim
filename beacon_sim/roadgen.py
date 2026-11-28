@@ -41,6 +41,8 @@ class RoadParams:
     wear_faded: float = 1.0          # 나쁜 구간 중 유형별 가중치: 희미함(반사율·대비 저하)
     wear_broken: float = 1.0         #   끊김(도색이 군데군데 벗겨짐)
     wear_sparse: float = 1.0         #   희소(점선 일부만 남음 / 실선이 짧은 토막)
+    paint_var: float = 0.0           # 도색 밝기 편차 0~1: 선마다 다른 바탕 밝기(새로 칠한 선 / 바랜 선) + 선을 따라 수십~백여 m에
+                                     #   걸쳐 서서히 흐려짐 (마모 구간과 겹침). 0 = 모든 선 같은 밝기
     lane_width: float = 3.6
     inner_shoulder: float = 1.0
     outer_shoulder: float = 3.0

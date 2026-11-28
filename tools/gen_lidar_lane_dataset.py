@@ -98,7 +98,7 @@ def rand_cfg(base, rng, seed):
     m.update(seed=int(seed), length=2500.0, lanes=int(rng.choice([2, 3, 4], p=[0.45, 0.4, 0.15])),
              design_speed=int(rng.choice([80, 100, 120], p=[0.25, 0.4, 0.35])), tunnels=int(rng.integers(0, 3)),
              gantries=int(rng.integers(0, 4)), grade_max=float(rng.uniform(0.02, 0.06)),
-             wear=float(rng.uniform(0.0, 0.7)), lane_width=float(rng.uniform(3.2, 3.8)),
+             wear=float(rng.uniform(0.0, 0.7)), paint_var=float(rng.uniform(0.0, 1.0)), lane_width=float(rng.uniform(3.2, 3.8)),
              inner_shoulder=float(rng.uniform(0.5, 1.5)), outer_shoulder=float(rng.uniform(0.5, 3.6)),
              outer_rail=str(rng.choice(['guardrail', 'concrete', 'mixed'], p=[0.35, 0.3, 0.35])),
              roadside_clutter=float(rng.choice([0.0, rng.uniform(0.2, 1.0)], p=[0.25, 0.75])),

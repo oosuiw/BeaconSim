@@ -60,8 +60,8 @@ def tabs(be, mode=None, start=False):
             _b('app.rand_map', '재생성할 때마다 맵 시드 랜덤'),
             _f('map.length', '길이', 1000, 10000, '%.0f m', 100),
             _i('map.lanes', '방향별 차로', 2, 4, slider=True),
-            dict(t='choice', k='map.design_speed', label='설계속도', opts=[[100, '100 km/h'], [120, '120 km/h']],
-                 tip='최소 곡선반경: 100 km/h → 460 m, 120 km/h → 710 m'),
+            dict(t='choice', k='map.design_speed', label='설계속도', opts=[[80, '80 km/h'], [100, '100 km/h'], [120, '120 km/h']],
+                 tip='최소 곡선반경: 80 km/h → 280 m, 100 km/h → 460 m, 120 km/h → 710 m'),
             _i('map.tunnels', '터널 (최대)', 0, 4, slider=True),
             _i('map.gantries', '갠트리', 0, 5, slider=True)]),
         _card('차선 상태', 'grip', [
@@ -69,6 +69,7 @@ def tabs(be, mode=None, start=False):
             _f('map.wear_faded', '희미함', 0, 1),
             _f('map.wear_broken', '끊김', 0, 1),
             _f('map.wear_sparse', '희소', 0, 1),
+            _f('map.paint_var', '도색 밝기 편차', 0, 1, tip='선마다 다른 밝기(새 도색/바랜 선) + 선을 따라 서서히 흐려짐'),
             dict(t='group', label='고급', items=[
                 _f('map.tunnel_len_min', '터널 최소', 100, 2000, '%.0f m', 10),
                 _f('map.tunnel_len_max', '터널 최대', 100, 3000, '%.0f m', 10),
@@ -77,6 +78,16 @@ def tabs(be, mode=None, start=False):
                 _f('map.dash_gap', '점선 빈칸', 3, 20, '%.1f m', 0.5),
                 _f('map.region_lat', '지역 위도', 33, 39, '%.4f', 0.0001),
                 _f('map.region_lon', '지역 경도', 124, 132, '%.4f', 0.0001)])]),
+        _card('도로변', 'road', [
+            dict(t='choice', k='map.outer_rail', label='바깥 방호시설',
+                 opts=[['guardrail', 'W빔 가드레일'], ['concrete', '콘크리트 방호벽'], ['mixed', '구간마다 섞임']]),
+            _f('map.outer_shoulder', '바깥 갓길', 0.5, 3.6, '%.1f m', 0.1),
+            _f('map.inner_shoulder', '안쪽 갓길', 0.5, 1.5, '%.1f m', 0.1),
+            _f('map.gutter_w', '측구 폭 (바깥)', 0, 0.9, '%.2f m', 0.05, tip='방호시설 앞 콘크리트 띠. 라이다에 노면 높이의 밝은 띠로 찍힘'),
+            _f('map.gutter_med_w', '측구 폭 (중앙분리대)', 0, 0.6, '%.2f m', 0.05),
+            _f('map.curb_h', '연석 높이 (가드레일 구간)', 0, 0.2, '%.2f m', 0.01),
+            _f('map.roadside_clutter', '도로 밖 덤불', 0, 1, tip='포장 끝 바깥 수풀·덤불 밀도 (라이다 잡물)'),
+            _f('map.grade_max', '최대 종단 경사', 0, 0.06, '%.3f', 0.005, tip='0 = 설계속도 기본값')]),
         dict(t='button', label='맵 재생성  (G)', icon=I['map'], action='regen_map', primary=True),
         _card('현재 맵', 'info', [dict(t='info', id='map')], 'muted'),
     ]

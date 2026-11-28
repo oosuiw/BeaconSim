@@ -137,10 +137,11 @@ class Backend(CondMixin):
             d = {}
         from .modes import migrate_settings
         migrate_settings(d)
+        ysec = {'params': 'map', 'scenario': 'scenario', 'traffic': 'traffic', 'env': 'environment'}
         for key, cls, attr in [('params', RoadParams, 'params'), ('scenario', ScenarioParams, 'sparams'),
                                ('traffic', TrafficParams, 'tparams'), ('env', EnvParams, 'eparams')]:
-            if key in d:
-                setattr(self, attr, _pick(cls, d[key]))
+            if key in d:                     # 저장된 설정에 없는 (새로 생긴) 키는 sim.yaml 값
+                setattr(self, attr, _pick(cls, {**self.base_cfg.get(ysec[key], {}), **d[key]}))
         self.rand_map, self.rand_scn = d.get('rand_map', False), d.get('rand_scn', True)
         self.export_dir = d.get('export_dir', self.export_dir)
         if d.get('mode') in ('dev', 'test', 'regress'):
