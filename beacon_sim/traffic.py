@@ -70,13 +70,27 @@ class TrafficParams:
     notice_min: float = 60.0      # 비콘 인지 거리 [m]
     notice_max: float = 250.0
     max_vehicles: int = 200
+    # SCC (적응형 순항) — 상용 범위 (2026-11 조사: ISO 15622 자동 감속 평균 ≤ 3.5 m/s², 차간 시간 단계형 약 1.0~2.0 s,
+    #   전방 레이더 1세대 약 160 m ~ 최신 300 m 이상, 정지·저속 물체는 반응 의무 없음·고속에서 무시하는 차종 있음)
     p_scc: float = 0.4            # SCC 탑재(작동) 비율
-    scc_gap_min: float = 1.0      # 차간 시간 설정 범위 [s]
-    scc_gap_max: float = 2.5
-    scc_decel_min: float = 2.5    # SCC 최대 감속도 범위 [m/s²] (상용 ACC 수준)
-    scc_decel_max: float = 5.0
-    scc_range: float = 150.0      # 레이더 추종 거리 [m]
-    scc_moving_min: float = 0.5   # 비콘을 '움직이는 물체'로 인식하는 최소 속도 (교통 흐름 방향) [m/s]
+    scc_gap_min: float = 1.0      # 차간 시간: 단계형 {1.0, 1.4, 1.8, 2.2} s 중 이 범위 안의 단계를 고름
+    scc_gap_max: float = 2.2
+    scc_decel_min: float = 2.5    # 최대 감속도 [m/s²]: 대부분(1 - p_scc_strong) 이 범위 (ISO 15622 상한 3.5)
+    scc_decel_max: float = 3.5
+    p_scc_strong: float = 0.2     # 상한을 넘겨 세게 감속하는 차 비율 (scc_decel_max ~ scc_decel_strong)
+    scc_decel_strong: float = 5.0
+    scc_range_min: float = 150.0  # 레이더 앞차 인식 거리 [m] (차마다 범위 안 무작위)
+    scc_range: float = 250.0
+    scc_beacon_min: float = 0.45  # 비콘 인식 거리 배율 (비콘 레이더 반사 면적이 승용차보다 약 10 dB 작음 → 거리 약 0.56배)
+    scc_beacon_max: float = 0.7
+    p_scc_static_ignore: float = 0.4   # 정지 물체에 반응하지 않는 차 비율 (나머지는 아래 속도 이하에서만 반응)
+    scc_static_vmax_min: float = 30.0  # 정지 물체에 반응하는 자기 속도 상한 [km/h] 범위 (예: 볼보 70 km/h)
+    scc_static_vmax_max: float = 70.0
+    scc_acq_min: float = 0.3      # 새 앞차(비콘 포함)를 추종 대상으로 잡기까지 지연 [s]
+    scc_acq_max: float = 1.5
+    scc_lat_min: float = 1.4      # 자기 진행 경로 폭의 절반 [m] (차마다 범위 안 무작위). 비콘이 차선 쪽으로 붙어 있으면
+    scc_lat_max: float = 2.1      #   옆 차로 차가 비콘을 앞차로 잘못 잡음 (오탐)
+    scc_moving_min: float = 0.5   # 비콘을 '움직이는 물체'로 보는 최소 속도 (교통 흐름 방향) [m/s]
 
     def to_dict(self):
         return asdict(self)
@@ -127,10 +141,19 @@ def resolve_seed(seed):
     return int(np.random.default_rng().integers(0, 2 ** 31 - 1)) if seed is None or int(seed) < 0 else int(seed)
 
 
+MANUAL_PER_MODEL = 2            # 수동 스폰 전용 슬롯: 차종마다 2대 (나란히·앞뒤 2대 스폰)
+
+
 def slot_specs(tp: TrafficParams, seed):
-    """차량 슬롯 외형 (결정적). 심/카메라/앱이 같은 슬롯 번호 → 같은 외형."""
+    """차량 슬롯 외형 (결정적). 심/카메라/앱이 같은 슬롯 번호 → 같은 외형.
+    앞 max_vehicles 개 = 무작위 교통, 뒤 = 수동 스폰 전용 (차종마다 MANUAL_PER_MODEL 대, 흰색·기본색)"""
     rng = np.random.default_rng(seed * 104729 + 3)
-    return [_spec(rng, tp.truck_ratio) for _ in range(tp.max_vehicles)]
+    auto = [_spec(rng, tp.truck_ratio) for _ in range(tp.max_vehicles)]
+    manual = []
+    for name, m in vehicles.MODELS.items():
+        col = (0.92, 0.92, 0.91) if m.kind == 'car' else (0.12, 0.25, 0.60)
+        manual += [_from_model(m, col, (0, 0, 0.035)) for _ in range(MANUAL_PER_MODEL)]
+    return auto + manual
 
 
 def _rotz(a):
@@ -347,7 +370,8 @@ class TrafficSim:
         self.m, self.scn, self.tp = m, scn, tp
         self.rng = np.random.default_rng(seed * 6007 + 11)
         self.specs = slot_specs(tp, seed)
-        N = tp.max_vehicles
+        self.n_auto = tp.max_vehicles               # 무작위 교통이 쓰는 슬롯 수 (나머지는 수동 스폰 전용)
+        N = len(self.specs)
         self.N = N
         self.len = np.array([s.length for s in self.specs])
         self.wid = np.array([s.width for s in self.specs])
@@ -388,6 +412,12 @@ class TrafficSim:
         self.scc_T = np.zeros(N)
         self.scc_b = np.zeros(N)
         self.scc_lock = np.zeros(N, bool)      # 비콘을 추종 대상으로 잡았는지
+        self.scc_R = np.full(N, 200.0)         # 레이더 앞차 인식 거리 [m]
+        self.scc_bf = np.full(N, 0.56)         # 비콘 인식 거리 배율
+        self.scc_vstat = np.zeros(N)           # 이 속도 [m/s] 이하일 때만 정지 물체에 반응 (0 = 무시)
+        self.scc_acq = np.full(N, 0.8)         # 새 대상 인식 지연 [s]
+        self.scc_seen = np.zeros(N)            # 비콘이 인식 조건을 만족한 누적 시간 [s]
+        self.scc_lat = np.full(N, 1.5)         # 진행 경로 폭의 절반 [m]
         self.scc_target = np.full(N, -1)       # -1 없음, -2 비콘, j 앞차 슬롯
         self.t = 0.0
         self.events = []                        # (t, 종류, 슬롯, 내용)
@@ -411,6 +441,8 @@ class TrafficSim:
         self._rev = 0                         # 상태가 바뀔 때마다 증가 → poses_at 캐시 무효화
         self._pa_cache = (None, None)
         self.beacon_vu = 0.0                    # 교통 흐름 방향 속도 (+ = 사고 현장 쪽으로 후진)
+        self.manual = {}                        # 수동 스폰 차량 → 측정 (SCC 인식 거리, 최대 감속, 최소 TTC·간격, 결과)
+        self.manual_results = []                # 끝난 수동 스폰 결과 (최근 50개)
         if tp.enabled:
             self._prefill()
 
@@ -433,12 +465,15 @@ class TrafficSim:
     def _lane_t(self, side, lane):
         return self.m.lane_center_t(lane, side)
 
-    def _activate(self, side, lane, u, v=None):
+    def _activate(self, side, lane, u, v=None, slot=None):
         self._rev += 1
-        free = np.nonzero(~self.active)[0]
-        if len(free) == 0:
-            return None
-        i = int(free[self.rng.integers(len(free))])
+        if slot is None:
+            free = np.nonzero(~self.active[:self.n_auto])[0]
+            if len(free) == 0:
+                return None
+            i = int(free[self.rng.integers(len(free))])
+        else:
+            i = int(slot)
         self.scc_target[self.scc_target == i] = -1      # 재사용 슬롯을 가리키던 SCC 대상 해제
         self.active[i] = True
         self.side[i] = side
@@ -466,14 +501,134 @@ class TrafficSim:
             self.beh[i] = B_NONE
         self.notice_d[i] = self.rng.uniform(self.tp.notice_min, max(self.tp.notice_min, self.tp.notice_max))
         self.slow_v[i] = self.rng.uniform(8.0, 15.0)
-        tp = self.tp
-        self.scc[i] = self.rng.random() < tp.p_scc
-        self.scc_T[i] = self.rng.uniform(tp.scc_gap_min, max(tp.scc_gap_min, tp.scc_gap_max))
-        self.scc_b[i] = self.rng.uniform(tp.scc_decel_min, max(tp.scc_decel_min, tp.scc_decel_max))
-        self.scc_lock[i] = False
-        self.scc_target[i] = -1
+        self.scc[i] = self.rng.random() < self.tp.p_scc
+        self._scc_profile(i)
         self.counts['spawned'] += 1
         return i
+
+    # ---- 수동 스폰 (개발 모드: SCC 감속 유도 시험)
+    def manual_slots(self, model):
+        base = self.n_auto + list(vehicles.MODELS).index(model) * MANUAL_PER_MODEL
+        return list(range(base, base + MANUAL_PER_MODEL))
+
+    def beacon_lane(self):
+        side = self.scn.side
+        return int(np.argmin([abs(self._lane_t(side, k) - self.beacon_t) for k in range(self.lanes)]))
+
+    def spawn(self, model='sedan_mid', lane='beacon', dist=150.0, speed_kmh=100.0, count=1, formation='side',
+              spacing=30.0, model2=None, scc=True, gap=None, decel=None, static=None, driver='none'):
+        """비콘 상류 dist m 에 차량 count(1~2)대. lane: 'beacon' | 'inner'(1차로 쪽 옆) | 'outer'(바깥쪽 옆) | 차로 번호.
+        formation: 'side' 나란히(2대째는 옆 차로) | 'column' 앞뒤(2대째는 spacing m 뒤, 같은 차로).
+        driver: 'none' 운전자가 비콘을 보고도 반응 안 함 (SCC 만으로 감속하는지 보는 최악 조건) | 'brake' | 'lane_change'
+        반환: 스폰한 슬롯 목록 (빈 목록이면 차로가 없거나 차종 슬롯이 모두 사용 중)"""
+        side, bl = self.scn.side, self.beacon_lane()
+        if isinstance(lane, str):
+            lane = {'beacon': bl, 'inner': bl - 1, 'outer': bl + 1}.get(lane, bl)
+        lane = int(lane)
+        models = [model, model2 or model][:max(1, min(2, int(count)))]
+        places = []
+        for k, mdl in enumerate(models):
+            if k == 0:
+                places.append((mdl, lane, dist))
+            elif formation == 'column':
+                places.append((mdl, lane, dist + spacing))
+            else:
+                other = lane + 1 if lane + 1 < self.lanes else lane - 1     # 옆 차로: 바깥쪽 우선, 없으면 안쪽
+                places.append((mdl, other, dist))
+        out = []
+        for mdl, ln, d in places:
+            if not 0 <= ln < self.lanes or mdl not in vehicles.MODELS:
+                continue
+            free = [s for s in self.manual_slots(mdl) if not self.active[s]]
+            if not free:
+                continue
+            v = max(0.0, float(speed_kmh) / 3.6)
+            i = self._activate(side, ln, self.beacon_u - BEACON_HALF_LEN - float(d) - self.len[free[0]] / 2, v=v, slot=free[0])
+            self.v0[i] = max(v, 1.0)
+            self.beh[i] = {'brake': B_BRAKE, 'lane_change': B_LC}.get(driver, B_CRASH)
+            self.scc[i] = bool(scc)
+            self._scc_profile(i, gap, decel, static)
+            self.manual[i] = dict(slot=i, model=mdl, label=vehicles.MODELS[mdl].ko, lane=ln, beacon_lane=bl,
+                                  dist=float(d), v_kmh=float(speed_kmh), scc=bool(scc), driver=str(driver),
+                                  scc_gap=round(float(self.scc_T[i]), 1), scc_decel=round(float(self.scc_b[i]), 2),
+                                  scc_range=round(float(self.scc_R[i] * self.scc_bf[i]), 0),
+                                  static_kmh=round(float(self.scc_vstat[i] * 3.6), 0),
+                                  t0=self.t, lock_m=None, false_lock=False, max_decel=0.0, min_ttc=None, min_gap=None, v_min=v * 3.6)
+            out.append(i)
+        if out:
+            self.events.append((self.t, 'spawn', out[0], '수동 스폰: ' + ', '.join(
+                f"{self.manual[i]['label']} {self.manual[i]['lane'] + 1}차로 {self.manual[i]['dist']:.0f} m" for i in out)))
+        return out
+
+    def clear_manual(self):
+        for i in list(self.manual):
+            self._finish_manual(i, '삭제')
+            self.active[i] = False
+        self._rev += 1
+
+    def _track_manual(self):
+        side, front_b = self.scn.side, self.beacon_u - BEACON_HALF_LEN
+        for i, r in list(self.manual.items()):
+            if not self.active[i]:
+                self._finish_manual(i, '통과')
+                continue
+            r['max_decel'] = max(r['max_decel'], float(-self.acc[i]))
+            r['v_min'] = min(r['v_min'], float(self.v[i]) * 3.6)
+            same = abs(self._lane_t(side, self.lane[i]) - self.beacon_t) < self.m.params.lane_width / 2
+            g = front_b - (self.u[i] + self.len[i] / 2)
+            if same and g > -1.0:
+                r['min_gap'] = round(g, 1) if r['min_gap'] is None else min(r['min_gap'], round(g, 1))
+                closing = self.v[i] - self.beacon_vu
+                if closing > 0.1 and g > 0:
+                    ttc = g / closing
+                    r['min_ttc'] = round(ttc, 2) if r['min_ttc'] is None else min(r['min_ttc'], round(ttc, 2))
+            if self.crashed[i]:
+                self._finish_manual(i, '추돌')
+            elif self.v[i] < 0.05 and ((same and 0 < g < 60) or self.scc_lock[i]):
+                self._finish_manual(i, '정지')
+            elif self.scc_lock[i] and self.v[i] < 3.0 and self.t - r['t0'] > 30:
+                self._finish_manual(i, '서행 추종')          # 비콘(후진 중)을 따라 기어감 — 오탐이면 옆 차로가 막힘
+            elif self.t - r['t0'] > 120:
+                self._finish_manual(i, '시간 초과')
+            elif g < -self.len[i] - 5:
+                self._finish_manual(i, '통과')
+
+    def _finish_manual(self, i, outcome):
+        r = self.manual.pop(i, None)
+        if r is None:
+            return
+        r.update(outcome=outcome, t=round(self.t - r.pop('t0'), 1), max_decel=round(r['max_decel'], 2),
+                 v_min=round(r['v_min'], 0))
+        self.manual_results = (self.manual_results + [r])[-50:]
+        lock = (f"{'오탐 ' if r['false_lock'] else ''}인식 {r['lock_m']:.0f} m" if r['lock_m'] is not None
+                else ('SCC 미인식' if r['scc'] else 'SCC 없음'))
+        ttc = f", 최소 TTC {r['min_ttc']:.1f} s" if r['min_ttc'] is not None else ''
+        gap = f", 최소 간격 {r['min_gap']:.1f} m" if r['min_gap'] is not None else ''
+        self.events.append((self.t, 'manual', int(i), f"{r['label']} {outcome}: {lock}, 최대 감속 {r['max_decel']:.1f} m/s²"
+                                                       f"{ttc}{gap}, 최저 {r['v_min']:.0f} km/h"))
+
+    GAP_LEVELS = (1.0, 1.4, 1.8, 2.2)
+
+    def _scc_profile(self, i, gap=None, decel=None, static=None):
+        """차량 i 의 SCC 성능 (상용 범위에서 무작위, 수동 스폰은 지정값). static: True 정지 물체 반응, False 무시"""
+        tp, r = self.tp, self.rng
+        lv = [g for g in self.GAP_LEVELS if tp.scc_gap_min - 1e-6 <= g <= tp.scc_gap_max + 1e-6] or [tp.scc_gap_min]
+        self.scc_T[i] = float(gap) if gap else float(r.choice(lv))
+        if decel:
+            self.scc_b[i] = float(decel)
+        elif r.random() < tp.p_scc_strong:
+            self.scc_b[i] = r.uniform(tp.scc_decel_max, max(tp.scc_decel_max, tp.scc_decel_strong))
+        else:
+            self.scc_b[i] = r.uniform(tp.scc_decel_min, max(tp.scc_decel_min, tp.scc_decel_max))
+        self.scc_R[i] = r.uniform(min(tp.scc_range_min, tp.scc_range), tp.scc_range)
+        self.scc_bf[i] = r.uniform(tp.scc_beacon_min, max(tp.scc_beacon_min, tp.scc_beacon_max))
+        ignore = (r.random() < tp.p_scc_static_ignore) if static is None else (not static)
+        self.scc_vstat[i] = 0.0 if ignore else r.uniform(tp.scc_static_vmax_min, max(tp.scc_static_vmax_min, tp.scc_static_vmax_max)) / 3.6
+        self.scc_lat[i] = r.uniform(tp.scc_lat_min, max(tp.scc_lat_min, tp.scc_lat_max))
+        self.scc_acq[i] = r.uniform(tp.scc_acq_min, max(tp.scc_acq_min, tp.scc_acq_max))
+        self.scc_seen[i] = 0.0
+        self.scc_lock[i] = False
+        self.scc_target[i] = -1
 
     def _prefill(self):
         """시작 시 도로에 차량 배치 (비콘~사고 구간과 그 상류 300m는 비움)."""
@@ -562,22 +717,31 @@ class TrafficSim:
             gap, dv = lead_gap[i], 0.0
             if np.isfinite(gap):
                 dv = self.v[i] - self.v[lead[i]]
-            self.scc_target[i] = int(lead[i]) if (self.scc[i] and gap < self.tp.scc_range) else -1
-            # SCC: 비콘이 같은 차로 앞, 레이더 거리 안 → 움직이고 있으면 추종 대상으로 잡음(이후 유지)
+            self.scc_target[i] = int(lead[i]) if (self.scc[i] and gap < self.scc_R[i]) else -1
+            # SCC: 비콘이 같은 차로 앞, 비콘 인식 거리(레이더 거리 × 반사 배율) 안, 움직이거나(또는 자기 속도가
+            #   정지 물체 반응 속도 이하) 인식 지연만큼 계속 보이면 추종 대상으로 잡음 (이후 같은 차로·거리 안이면 유지)
             if self.scc[i] and side == self.scn.side:
                 bt = self._lane_t(side, self.lane_to[i])
-                in_lane = abs(self.beacon_t - bt) < self.m.params.lane_width / 2
+                in_lane = abs(self.beacon_t - bt) < self.scc_lat[i] + BEACON_HALF_W
                 bgap = self.beacon_u - BEACON_HALF_LEN - front
-                if in_lane and 0 < bgap < self.tp.scc_range:
-                    if not self.scc_lock[i] and self.beacon_vu > self.tp.scc_moving_min:
+                if in_lane and 0 < bgap < self.scc_R[i] * self.scc_bf[i]:
+                    trackable = self.beacon_vu > self.tp.scc_moving_min or self.v[i] < self.scc_vstat[i]
+                    self.scc_seen[i] = self.scc_seen[i] + self.DT if trackable else 0.0
+                    if not self.scc_lock[i] and self.scc_seen[i] >= self.scc_acq[i]:
                         self.scc_lock[i] = True
                         self.counts['scc_lock'] += 1
-                        self.events.append((self.t, 'scc_lock', int(i), f'SCC가 비콘을 앞차로 인식 ({bgap:.0f} m)'))
+                        wrong = self.lane_to[i] != self.beacon_lane()
+                        self.counts['scc_false'] = self.counts.get('scc_false', 0) + int(wrong)
+                        self.events.append((self.t, 'scc_lock', int(i), f"SCC가 비콘을 앞차로 인식 ({bgap:.0f} m"
+                                                                        f"{', 옆 차로 오탐' if wrong else ''})"))
+                        if int(i) in self.manual:
+                            self.manual[int(i)].update(lock_m=round(float(bgap), 1), false_lock=bool(wrong))
                     if self.scc_lock[i] and bgap < gap:
                         gap, dv = bgap, self.v[i] - self.beacon_vu
                         self.scc_target[i] = -2
                 else:
                     self.scc_lock[i] = False
+                    self.scc_seen[i] = 0.0
             # 비콘 인지: 인지 거리(환경·경광등 배율, 가시거리 상한) 안 + 시야가 가리지 않아야 함
             if side == self.scn.side and not self.noticed[i] and self.beh[i] != B_CRASH:
                 d_eff = min(self.notice_d[i] * self.notice_scale, self.visibility)
@@ -689,6 +853,8 @@ class TrafficSim:
         tg = self.scc_target
         stale = (tg >= 0) & ~self.active[np.clip(tg, 0, self.N - 1)]
         tg[stale] = -1
+        if self.manual:
+            self._track_manual()
         if len(self.events) > 500:
             self.events = self.events[-500:]
 

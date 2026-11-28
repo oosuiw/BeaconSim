@@ -32,7 +32,7 @@ from .common import (CACHE_DIR, ROOT, T_CAMLINK_OPTICAL, apply_to_sim_config, ha
 from .engine import EngineThread, SimEngine
 from .environment import EnvParams
 from .evaluate import subscribe_eval
-from .modes import CondMixin, default_test
+from .modes import SETTINGS_VER, CondMixin, default_test
 from .session import RegressRun, TestSession, save_regression
 from .godot_link import C, CameraModel, godot_env, robot_links_g, export_scene, godot_bin, project_dir, to_g, xform_g
 from .roadgen import RoadParams, generate
@@ -96,6 +96,7 @@ class Backend(CondMixin):
         self.mode, self.prev_mode = None, None
         self.mode_sel = 'dev'
         self.test = default_test()
+        self.spawn = dict(ui_schema.SPAWN_DEFAULT)
         self.gnss_override = {}
         self.applied = None                  # 실행 중 조건 (변경 감지용)
         self.session = None                  # 시험 세션
@@ -146,6 +147,8 @@ class Backend(CondMixin):
             self.mode_sel = d['mode']
         if isinstance(d.get('test'), dict):
             self.test = dict(default_test(), **d['test'])
+        if isinstance(d.get('spawn'), dict):
+            self.spawn.update({k: v for k, v in d['spawn'].items() if k in self.spawn})
         try:
             with open(GODOT_UI) as f:
                 g = json.load(f)
@@ -168,7 +171,7 @@ class Backend(CondMixin):
             d = {}
         d.update(params=self.params.to_dict(), scenario=self.sparams.to_dict(), traffic=self.tparams.to_dict(),
                  env=self.eparams.to_dict(), rand_map=self.rand_map, rand_scn=self.rand_scn, export_dir=self.export_dir,
-                 mode=self.mode_sel, test=self.test, settings_ver=2)
+                 mode=self.mode_sel, test=self.test, spawn=self.spawn, settings_ver=SETTINGS_VER)
         os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
         with open(SETTINGS, 'w') as f:
             json.dump(d, f, indent=1)
@@ -530,6 +533,7 @@ class Server:
         self.mode_t = 0.0
         self.godot_fps = 0.0
         self.cam_stats = {'req': 0, 'done': 0, 'drop': 0, 'rt': [], 'pub': []}
+        self.spawn_info_t, self.spawn_key = 0.0, None
         self.export_was_busy = False
         shm = '/dev/shm' if os.path.isdir('/dev/shm') else CACHE_DIR
         self.cam_path = os.path.join(shm, f'beaconsim_view_{os.getpid()}.rgb')
@@ -651,6 +655,14 @@ class Server:
         elif a in ('light_warning', 'light_search') and be.engine is not None and be.mode in ('dev', 'test'):
             which = a.split('_')[1]
             be.engine.set_light(which, not be.engine.light_on(which))     # 켜짐 ↔ 꺼짐 (설정을 바꾸면 풀림)
+        elif a == 'spawn' and be.engine is not None and be.mode == 'dev':
+            got = be.engine.traffic.spawn(**ui_schema.spawn_args(be.spawn))
+            if not got:
+                be.log('스폰 실패: 차로가 없거나 이 차종이 이미 2대 나와 있음')
+            self.spawn_info_t = 0.0
+        elif a == 'spawn_clear' and be.engine is not None:
+            be.engine.traffic.clear_manual()
+            self.spawn_info_t = 0.0
         elif a == 'mast' and be.engine is not None and be.mode in ('dev', 'test'):
             be.engine.set_mast(be.engine.mast_target <= 0, 'key')          # 펴기 ↔ 접기
         elif a == 'select_mode' and arg in ('dev', 'test', 'regress'):
@@ -806,7 +818,7 @@ class Server:
         for ev in snap['events']:
             if ev[1] == 'mast':
                 be.log(f'[{ev[0]:.1f}s] {ev[3]}')
-            elif ev[1] in ('crash', 'scc_lock', 'beacon_contact', 'beacon_damaged'):
+            elif ev[1] in ('crash', 'scc_lock', 'beacon_contact', 'beacon_damaged', 'spawn', 'manual'):
                 be.log(f'[{ev[0]:.1f}s] 차량 #{ev[2] if ev[2] >= 0 else "-"} {ev[3]}')
         self._send_sensors(snap)
         self._camera(snap)
@@ -965,6 +977,15 @@ class Server:
                 self.send_values()
             if self.be.engine is not None and self.be.build_future is None:
                 self.send_state()
+                tr = self.be.engine.traffic
+                if getattr(self, 'spawn_at', None) is not None and self.be.engine.t >= self.spawn_at:
+                    self.spawn_at = None
+                    self.action('spawn')
+                key = (len(tr.manual), len(tr.manual_results), tr.manual_results[-1]['t'] if tr.manual_results else 0)
+                now = time.time()
+                if (tr.manual or key != self.spawn_key) and now - self.spawn_info_t > 0.5:
+                    self.spawn_info_t, self.spawn_key = now, key
+                    self.send({'type': 'info', 'info': {'spawn': ui_schema.spawn_info(tr)}})
             self.be.tick(self.be.engine.t if self.be.engine is not None and self.be.build_future is None else None)
             self.send_ui_if_changed()
             self.send_mode()
@@ -1014,6 +1035,7 @@ def main():
     ap.add_argument('--shot-tab', type=int, default=None, help='테스트용: 캡처 전에 고를 사이드바 탭 번호 (0~5)')
     ap.add_argument('--shot-help', action='store_true', help='테스트용: 도움말 창을 연 상태로 캡처')
     ap.add_argument('--shot-orbit', default=None, help='테스트용: 캡처 시점 "거리,피치°,방향°" (비콘 기준)')
+    ap.add_argument('--spawn-at', type=float, default=None, help='테스트용: 심 시각 이 초에 수동 스폰 버튼을 한 번 누름 (개발 모드)')
     ap.add_argument('--selftest', default=None, help='테스트용: UI 자체 시험 (입력 주입) 후 결과 화면을 이 폴더에 저장하고 종료')
     a = ap.parse_args()
     be = Backend(ros=not a.no_ros)
@@ -1041,6 +1063,7 @@ def main():
     if a.scenario:
         be.load_scenario_yaml(a.scenario)
     srv = Server(be, (w, h), extra, start_mode=a.mode)
+    srv.spawn_at = a.spawn_at
 
     def stop(*_):
         srv.running = False

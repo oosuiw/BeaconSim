@@ -433,7 +433,12 @@ func _update_enables() -> void:
 	for e in enables:
 		var c: String = e["cond"]
 		var neg := c.begins_with("!")
-		var on := bool(vals.get(c.trim_prefix("!"), true))
+		var on := true
+		if "==" in c:                                   # "키==값" (선택형 값 비교)
+			var kv := c.trim_prefix("!").split("==")
+			on = str(vals.get(kv[0], "")) == kv[1]
+		else:
+			on = bool(vals.get(c.trim_prefix("!"), true))
 		if neg:
 			on = not on
 		for w in e["ws"]:

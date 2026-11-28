@@ -37,7 +37,7 @@ WHERE_KO = {'random': '랜덤', 'open': '개활지', 'tunnel_entry': '터널 입
 SIDE_KO = {'random': '랜덤', 'down': '하행', 'up': '상행'}
 
 
-SETTINGS_VER = 2       # app.json 형식: 2 = 센서타워 자동 펴기 기본 켬
+SETTINGS_VER = 3       # app.json 형식: 2 = 센서타워 자동 펴기 기본 켬, 3 = SCC 상용 범위 기본값
 
 
 def migrate_settings(d):
@@ -49,6 +49,9 @@ def migrate_settings(d):
                 sc.setdefault(new, sc.pop(old))
     if int(d.get('settings_ver', 0)) < 2 and isinstance(d.get('scenario'), dict):
         d['scenario']['tower_auto'] = True          # 자동 펴기를 기본으로 바꿈 (v0.3.x)
+    if int(d.get('settings_ver', 0)) < 3 and isinstance(d.get('traffic'), dict):
+        for k in [k for k in d['traffic'] if k.startswith('scc_')]:     # 예전 SCC 범위 → 새 기본값 (상용 범위 조사 반영)
+            d['traffic'].pop(k)
     d['settings_ver'] = SETTINGS_VER
     return d
 

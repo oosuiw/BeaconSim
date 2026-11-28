@@ -14,6 +14,11 @@ from dataclasses import fields
 from .evaluate import CRITERIA_DEFAULT_VALUE, CRITERIA_KO
 from .modes import ATYPE_KO, INT_CRITERIA, MODE_KO
 from .session import PRESETS, SENSORS_KO
+from . import vehicles
+
+# 수동 스폰 (개발 모드, SCC 감속 유도 시험). gap/decel 0 = 상용 범위에서 무작위
+SPAWN_DEFAULT = dict(model='sedan_mid', model2='', lane='beacon', dist=150.0, speed=100.0, count=1, formation='side',
+                     spacing=30.0, scc=True, gap=0.0, decel=0.0, static='random', driver='none')
 
 # Font Awesome 6 Solid 코드
 I = dict(road=0xf018, burst=0xf5e1, car=0xf5e4, cloud=0xf743, eye=0xf06e, floppy=0xf0c7, grip=0xf7a5, info=0xf05a,
@@ -128,16 +133,31 @@ def tabs(be, mode=None, start=False):
             _f('traffic.notice_max', '인지 거리 최대', 10, 500, '%.0f m', 5),
             dict(t='note', text='비율은 합으로 정규화')], 'warn'),
         _card('SCC (적응형 순항)', 'gauge', [
+            dict(t='note', text='차마다 아래 범위에서 무작위 (상용 범위 기본값)'),
             _f('traffic.p_scc', '작동 비율', 0, 1),
-            _f('traffic.scc_gap_min', '차간 시간 최소', 0.8, 3.0, '%.1f s', 0.1),
-            _f('traffic.scc_gap_max', '차간 시간 최대', 0.8, 3.0, '%.1f s', 0.1),
-            _f('traffic.scc_decel_min', '최대 감속 최소', 1, 8, '%.1f m/s²', 0.1),
-            _f('traffic.scc_decel_max', '최대 감속 최대', 1, 8, '%.1f m/s²', 0.1),
-            _f('traffic.scc_range', '레이더 거리', 50, 250, '%.0f m', 5),
+            _f('traffic.scc_gap_min', '차간 시간 최소', 1.0, 2.2, '%.1f s', 0.4),
+            _f('traffic.scc_gap_max', '차간 시간 최대', 1.0, 2.2, '%.1f s', 0.4),
+            _f('traffic.scc_decel_min', '최대 감속 최소', 1, 6, '%.1f m/s²', 0.1),
+            _f('traffic.scc_decel_max', '최대 감속 최대', 1, 6, '%.1f m/s²', 0.1, tip='ISO 15622 자동 감속 상한 3.5'),
+            _f('traffic.p_scc_strong', '더 세게 감속하는 비율', 0, 1),
+            _f('traffic.scc_decel_strong', '센 감속 최대', 3, 8, '%.1f m/s²', 0.1),
+            _f('traffic.scc_range_min', '레이더 거리 최소', 50, 300, '%.0f m', 5),
+            _f('traffic.scc_range', '레이더 거리 최대', 50, 300, '%.0f m', 5),
+            _f('traffic.scc_beacon_min', '비콘 인식 거리 배율 최소', 0.2, 1.0),
+            _f('traffic.scc_beacon_max', '비콘 인식 거리 배율 최대', 0.2, 1.0),
+            _f('traffic.p_scc_static_ignore', '정지 물체 무시 비율', 0, 1),
+            _f('traffic.scc_static_vmax_min', '정지 물체 반응 속도 최소', 0, 100, '%.0f km/h', 5),
+            _f('traffic.scc_static_vmax_max', '정지 물체 반응 속도 최대', 0, 100, '%.0f km/h', 5),
+            _f('traffic.scc_acq_min', '인식 지연 최소', 0, 3, '%.1f s', 0.1),
+            _f('traffic.scc_acq_max', '인식 지연 최대', 0, 3, '%.1f s', 0.1),
+            _f('traffic.scc_lat_min', '경로 반폭 최소', 1.0, 2.5, '%.2f m', 0.05, tip='비콘이 차선 쪽으로 붙으면 옆 차로 차가 오탐'),
+            _f('traffic.scc_lat_max', '경로 반폭 최대', 1.0, 2.5, '%.2f m', 0.05),
             _f('traffic.scc_moving_min', '이동 판정 속도', 0.1, 3.0, '%.1f m/s', 0.1),
-            dict(t='note', text='정지한 비콘은 무시, 사고 현장 쪽으로 후진하면 앞차로 인식')], 'scc'),
+            dict(t='note', text='비콘이 사고 현장 쪽으로 후진하면 앞차로 인식. 정지한 비콘은 정지 물체 반응 차만, 저속에서만')], 'scc'),
         dict(t='note', text='변경은 재시작(R) 시 반영'),
     ]
+    if not start and mode != 'test':
+        tab_traffic.insert(0, _spawn_card())
     tab_env = [
         _card('시간대 · 날씨', 'cloud', [
             dict(t='seg', k='env.time_of_day', opts=[['random', '랜덤'], ['day', '낮'], ['dusk', '황혼'], ['night', '밤']]),
@@ -211,6 +231,63 @@ def tabs(be, mode=None, start=False):
     return out
 
 
+def _spawn_card():
+    mopts = [[k, m.ko] for k, m in vehicles.MODELS.items()]
+    return _card('수동 스폰 (SCC 감속 유도 시험)', 'car', [
+        dict(t='note', text='접근 차량을 끄고 시작해서, 비콘 상류에 원하는 차를 원하는 조건으로 보냄'),
+        dict(t='choice', k='spawn.model', label='차종', opts=mopts),
+        dict(t='seg', k='spawn.lane', opts=[['beacon', '비콘 차로'], ['inner', '안쪽 옆 차로'], ['outer', '바깥쪽 옆 차로']]),
+        _f('spawn.dist', '비콘까지 거리', 30, 400, '%.0f m', 5),
+        _f('spawn.speed', '속도', 10, 140, '%.0f km/h', 5),
+        dict(t='seg', k='spawn.count', opts=[[1, '1대'], [2, '2대']]),
+        dict(t='seg', k='spawn.formation', opts=[['side', '나란히 (옆 차로)'], ['column', '앞뒤 (같은 차로)']],
+             enable='spawn.count==2'),
+        dict(t='choice', k='spawn.model2', label='2번째 차종', opts=[['', '같은 차종']] + mopts, enable='spawn.count==2'),
+        _f('spawn.spacing', '앞뒤 간격', 10, 150, '%.0f m', 5, enable='spawn.count==2'),
+        _b('spawn.scc', 'SCC 켜기'),
+        dict(t='choice', k='spawn.gap', label='차간 시간', enable='spawn.scc',
+             opts=[[0.0, '무작위']] + [[g, f'{g:.1f} s'] for g in (1.0, 1.4, 1.8, 2.2)]),
+        _f('spawn.decel', 'SCC 최대 감속 (0 = 무작위)', 0, 6, '%.1f m/s²', 0.1, enable='spawn.scc'),
+        dict(t='seg', k='spawn.static', label='정지 물체 반응', enable='spawn.scc',
+             opts=[['random', '무작위'], ['on', '저속에서 반응'], ['off', '무시']]),
+        dict(t='seg', k='spawn.driver', label='운전자', opts=[['none', '무반응 (SCC만)'], ['brake', '감속'],
+                                                               ['lane_change', '차로변경']]),
+        dict(t='button', label='스폰  (N)', icon=I['car'], action='spawn', primary=True),
+        dict(t='button', label='수동 스폰 차량 지우기', icon=I['rotate'], action='spawn_clear'),
+        dict(t='info', id='spawn'),
+    ], 'scc')
+
+
+def spawn_args(sp):
+    """UI 설정 → TrafficSim.spawn 인자"""
+    return dict(model=sp['model'], model2=sp['model2'] or None, lane=sp['lane'], dist=float(sp['dist']),
+                speed_kmh=float(sp['speed']), count=int(sp['count']), formation=sp['formation'],
+                spacing=float(sp['spacing']), scc=bool(sp['scc']), gap=float(sp['gap']) or None,
+                decel=float(sp['decel']) or None, static={'on': True, 'off': False}.get(sp['static']),
+                driver=sp['driver'])
+
+
+def spawn_info(tr):
+    """수동 스폰 카드 아래: 진행 중 차량 + 최근 결과"""
+    out = []
+    fb = tr.beacon_u - 0.3
+    for i, r in tr.manual.items():
+        g = fb - (tr.u[i] + tr.len[i] / 2)
+        lk = (f"{'오탐 ' if r['false_lock'] else ''}인식 {r['lock_m']:.0f} m" if r['lock_m'] is not None
+              else ('SCC 미인식' if r['scc'] else 'SCC 없음'))
+        out.append(f"▶ {r['label']} {r['lane'] + 1}차로 · 비콘까지 {g:.0f} m · {tr.v[i] * 3.6:.0f} km/h · {lk}")
+    for r in reversed(tr.manual_results[-6:]):
+        lk = (f"{'오탐 ' if r['false_lock'] else ''}인식 {r['lock_m']:.0f} m" if r['lock_m'] is not None
+              else ('SCC 미인식' if r['scc'] else 'SCC 없음'))
+        ttc = f" · TTC {r['min_ttc']:.1f} s" if r['min_ttc'] is not None else ''
+        gap = f" · 간격 {r['min_gap']:.1f} m" if r['min_gap'] is not None else ''
+        out.append(f"{r['outcome']} · {r['label']} {r['lane'] + 1}차로 {r['v_kmh']:.0f} km/h · {lk} · "
+                   f"감속 {r['max_decel']:.1f} m/s²{ttc}{gap}")
+        out.append(f"   SCC 설정: 차간 {r['scc_gap']:.1f} s · 최대 감속 {r['scc_decel']:.1f} · 비콘 인식 거리 "
+                   f"{r['scc_range']:.0f} m · 정지물체 {'%.0f km/h 이하' % r['static_kmh'] if r['static_kmh'] else '무시'}")
+    return out or ['스폰한 차량 없음']
+
+
 def tab_test(be):
     crit = []
     for k, label in CRITERIA_KO.items():
@@ -266,6 +343,8 @@ def values(be):
         out[f'env.{k}_rand'] = v < 0
         if v < 0:
             out[f'env.{k}'] = dflt
+    for k, v in getattr(be, 'spawn', SPAWN_DEFAULT).items():
+        out[f'spawn.{k}'] = v
     out.update({'app.rand_map': be.rand_map, 'app.rand_scn': be.rand_scn, 'key.speed': be.key_speed,
                 'key.yaw': be.key_yaw, 'export.dir': be.export_dir, 'export.pcd': be.export_pcd,
                 'export.busy': be.export_busy()})
@@ -326,6 +405,11 @@ def set_value(be, key, v):
         tp.notice_max = max(tp.notice_max, tp.notice_min)
         tp.scc_gap_max = max(tp.scc_gap_max, tp.scc_gap_min)
         tp.scc_decel_max = max(tp.scc_decel_max, tp.scc_decel_min)
+        tp.scc_decel_strong = max(tp.scc_decel_strong, tp.scc_decel_max)
+        tp.scc_range = max(tp.scc_range, tp.scc_range_min)
+        for a, b in (('scc_beacon_min', 'scc_beacon_max'), ('scc_static_vmax_min', 'scc_static_vmax_max'),
+                     ('scc_acq_min', 'scc_acq_max'), ('scc_lat_min', 'scc_lat_max')):
+            setattr(tp, b, max(getattr(tp, b), getattr(tp, a)))
         if grp == 'map' and name == 'lanes':
             be.sparams.lane = min(be.sparams.lane, p.lanes - 1)
             return True
@@ -335,6 +419,10 @@ def set_value(be, key, v):
             be.engine.set_light_params(**{name: getattr(obj, name)})       # 조명은 재시작 없이 바로
             if isinstance(getattr(be, 'applied', None), dict) and 'scenario' in be.applied:
                 be.applied['scenario'][name] = getattr(obj, name)          # 이미 반영됨 → '변경 사항(재시작)'에 안 뜸
+        return False
+    if grp == 'spawn' and name in SPAWN_DEFAULT:
+        sp = be.spawn
+        sp[name] = _coerce(SPAWN_DEFAULT[name], v) if not isinstance(SPAWN_DEFAULT[name], bool) else bool(v)
         return False
     if grp == 'test':
         _set_test(be, name, v)

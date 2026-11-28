@@ -171,6 +171,22 @@ def _portal_outer(ring, t_lo, t_hi, h_top):
     return np.array(out)
 
 
+def _rail_segments(p, side, a, b):
+    """바깥 방호시설 구간 [(시작, 끝, 'guardrail'|'concrete')] — mixed 는 200~800 m 구간마다 무작위 (맵 시드로 결정)"""
+    kind = getattr(p, 'outer_rail', 'guardrail')
+    if kind in ('guardrail', 'concrete'):
+        return [(a, b, kind)]
+    rng = np.random.default_rng(p.seed * 7 + (3 if side > 0 else 5))
+    out, s0 = [], a
+    k = 'concrete' if rng.random() < 0.5 else 'guardrail'
+    while s0 < b:
+        s1 = min(b, s0 + rng.uniform(200, 800))
+        out.append((s0, s1, k))
+        k = 'guardrail' if k == 'concrete' else 'concrete'
+        s0 = s1
+    return out
+
+
 def build_static(m: RoadModel):
     p = m.params
     L = m.length
@@ -194,15 +210,24 @@ def build_static(m: RoadModel):
         mb.sweep(a, b, prof, flip=True)
     parts.append(mb.build('barrier', 'barrier'))
 
-    # 가드레일 (W빔 상자 근사 + 지주 4m 간격), 터널 구간 제외
-    mb = MeshBuilder(m)
+    # 바깥 방호시설, 터널 구간 제외: W빔 가드레일(상자 근사 + 지주 4m 간격) 또는 콘크리트 방호벽(갓길 쪽 면이 가장자리)
+    mb, mbc = MeshBuilder(m), MeshBuilder(m)
     for side in (-1, 1):
         tg = side * m.guardrail_t
         for a, b in _open_intervals(0, L, [(x0 - 5, x1 + 5) for x0, x1 in tun]):
-            mb.sweep(a, b, [(tg - 0.05, 0.45), (tg + 0.05, 0.45), (tg + 0.05, 0.76), (tg - 0.05, 0.76)], closed=True)
-            for sp in np.arange(a + 1.0, b, 4.0):
-                mb.box_at(sp, tg + side * 0.10, (-0.06, -0.06, 0.0), (0.06, 0.06, 0.70))
+            for a2, b2, kind in _rail_segments(p, side, a, b):
+                if kind == 'concrete':
+                    tc = tg + side * 0.25                         # 방호벽 중심 (도로 쪽 아랫면 ≈ 가장자리 + 0.05 m)
+                    prof = [(tc + x, z) for x, z in ((0.3, 0.0), (0.18, 0.08), (0.12, 0.81), (-0.12, 0.81),
+                                                      (-0.18, 0.08), (-0.3, 0.0))]      # 중앙분리대와 같은 단면·방향
+                    mbc.sweep(a2, b2, prof, flip=True)
+                else:
+                    mb.sweep(a2, b2, [(tg - 0.05, 0.45), (tg + 0.05, 0.45), (tg + 0.05, 0.76), (tg - 0.05, 0.76)], closed=True)
+                    for sp in np.arange(a2 + 1.0, b2, 4.0):
+                        mb.box_at(sp, tg + side * 0.10, (-0.06, -0.06, 0.0), (0.06, 0.06, 0.70))
     parts.append(mb.build('guardrail', 'guardrail'))
+    if mbc.v:
+        parts.append(mbc.build('barrier', 'barrier'))
 
     # 조명주 (양쪽 50m 간격, 터널 밖)
     mb = MeshBuilder(m)
@@ -245,6 +270,9 @@ def build_static(m: RoadModel):
 
     # 지형: 성토 사면 + 터널 구간 산지
     parts.append(_terrain(m))
+    cl = _clutter(m)
+    if cl is not None:
+        parts.append(cl)
     return [q for q in parts if q is not None]
 
 
@@ -336,6 +364,35 @@ def _mountain(m: RoadModel, s):
         k = np.minimum(np.clip((s - (a - ramp)) / ramp, 0, 1), np.clip(((b + ramp) - s) / ramp, 0, 1))
         H = np.maximum(H, TUNNEL_COVER * k * k * (3 - 2 * k))
     return H
+
+
+def _clutter(m: RoadModel):
+    """도로 밖 수풀·덤불 (지형 클래스 상자): 포장 끝 바깥 0.3~9 m, 성토 사면 높이를 따라. 밀도 = roadside_clutter"""
+    p = m.params
+    dens = float(getattr(p, 'roadside_clutter', 0.0))
+    if dens <= 0:
+        return None
+    rng = np.random.default_rng(p.seed * 11 + 7)
+    pv = m.paved_t
+    mb = MeshBuilder(m)
+    for side in (-1, 1):
+        s = 2.0
+        while s < m.length - 2.0:
+            s += float(rng.exponential(6.0 / dens))
+            if m.in_tunnel(s, margin=5) or s >= m.length - 2.0:
+                continue
+            Hm = float(_mountain(m, np.array([s]))[0])
+            for _ in range(int(rng.integers(1, 4))):                  # 덤불 무리 (포장 끝 가까이 많이)
+                d = 0.3 + float(rng.exponential(1.8))
+                if d > 9.0:
+                    continue
+                # 지형 모델(_terrain)과 같은 높이: 성토 1:2 사면(최대 1.5 m 아래)과 절토 사면 중 높은 쪽, 포장 끝 높이 기준
+                ground = max(-min(0.5 * d, 1.5), Hm * float(np.clip(d / max(Hm, 1e-3), 0, 1)))
+                ground += float(m.surface_z(s, side * pv) - m.surface_z(s, side * (pv + d)))
+                h = float(rng.choice([rng.uniform(0.1, 0.4), rng.uniform(0.4, 1.6)], p=[0.6, 0.4]))
+                L, W = float(rng.uniform(0.3, 2.5)), float(rng.uniform(0.3, 1.5))
+                mb.box_at(s + rng.uniform(-1.5, 1.5), side * (pv + d), (-L / 2, -W / 2, ground - 0.05), (L / 2, W / 2, ground + h))
+    return mb.build('terrain', 'terrain')
 
 
 def _terrain(m: RoadModel):

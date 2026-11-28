@@ -9,7 +9,7 @@ import numpy as np
 
 from . import rgl
 from .common import ROOT
-from .scene import CLASS, RCS
+from .scene import CLASS, RCS, RETRO
 
 # entity id = 클래스*10000 + 인스턴스 → 점별 시맨틱/인스턴스 정답
 ID_SCALE = 10000
@@ -23,7 +23,34 @@ def entity_id(cls, instance=0):
 _WET_FACTOR = {CLASS['road']: 0.5, CLASS['lane_white']: 0.35, CLASS['lane_yellow']: 0.35}
 
 
-def lidar_intensity_and_drop(retro, inc, dist, range_at_10pct, rng, env=None, eid=None):
+# 실기 Hesai Pandar40P 밝기 모델 (2026-11-28, 실기 bag 4개 측정에 맞춤: 장착 높이 약 0.77 m)
+#   클래스 → (A, k, σ): 밝기 = A · cos(입사각)^k · exp(N(0, σ))
+#   노면: 멀어질수록(비스듬할수록) 급격히 어두워짐 (실측 중앙값 2~10 m 7 → 10~20 m 5 → 20~30 m 2)
+#   도색: 유리알 재귀반사라 각도에 둔감, 점마다 편차 큼 (실측 상위 10% 28~42 가 먼 곳까지 유지)
+#   가드레일·배리어(수직면): 거리와 무관하게 약 18
+HESAI_V1 = {'road': (22.0, 0.6, 0.15), 'lane_white': (30.0, 0.15, 0.45), 'lane_yellow': (26.0, 0.15, 0.45),
+            'guardrail': (19.0, 0.15, 0.2), 'barrier': (18.5, 0.15, 0.2), 'terrain': (14.0, 0.6, 0.3)}
+
+
+def _hesai_intensity(retro, cos_i, eid, rng, old):
+    cls = eid // ID_SCALE
+    out = old.copy()
+    n = len(cos_i)
+    road_a, road_k, road_s = HESAI_V1['road']
+    road_i = road_a * cos_i ** road_k * np.exp(rng.normal(0, road_s, n))
+    for name, (a, k, s) in HESAI_V1.items():
+        m = cls == CLASS[name]
+        if not m.any():
+            continue
+        v = a * cos_i[m] ** k * np.exp(rng.normal(0, s, m.sum()))
+        if name.startswith('lane'):            # 마모(희미) 차선: 메시 반사율이 노면 쪽으로 섞인 만큼 노면 밝기로
+            w = np.clip((retro[m] - RETRO['road']) / max(RETRO[name] - RETRO['road'], 1e-6), 0.0, 1.0)
+            v = w * v + (1 - w) * road_i[m]
+        out[m] = v + rng.normal(0, 1.0, m.sum())
+    return out
+
+
+def lidar_intensity_and_drop(retro, inc, dist, range_at_10pct, rng, env=None, eid=None, model=None):
     """간이 LiDAR 방정식: 수신 세기 ∝ 반사율·cos(입사각)·exp(-2αd)/R².
     유효 최대거리 = R10 * sqrt(반사율·cos·감쇠 / 0.1). 이를 넘으면 raydrop.
     env: 대기 감쇠 α, 노면 젖음(정반사로 되돌아오는 빛 감소 → 노면/차선 반사율 저하)."""
@@ -34,10 +61,13 @@ def lidar_intensity_and_drop(retro, inc, dist, range_at_10pct, rng, env=None, ei
             retro = np.where(cls == c, retro * (1 - f * env.wet), retro)
     cos_i = np.clip(np.cos(inc), 0.0, 1.0)
     att = np.exp(-2.0 * env.alpha * dist) if env is not None and env.alpha > 0 else 1.0
-    power = retro * cos_i * att
+    hesai = model == 'hesai_v1' and eid is not None
+    power = retro * (np.sqrt(cos_i) if hesai else cos_i) * att      # 실기: 비스듬한 노면도 40 m 넘게 낮은 밝기로 돌아옴
     eff = range_at_10pct * np.sqrt(np.maximum(power, 1e-6) / 0.1)
     keep = dist < eff * np.exp(0.08 * rng.standard_normal(len(dist)))
     inten = 100.0 * retro * (0.35 + 0.65 * cos_i) * np.sqrt(att) + rng.normal(0, 1.5, len(dist))
+    if hesai:
+        inten = _hesai_intensity(retro, cos_i, eid, rng, inten) * np.sqrt(att)
     return np.clip(inten, 0, 255), keep
 
 
@@ -116,7 +146,16 @@ class Pandar40P:
         xyz, d, idx = o[rgl.XYZ_VEC3_F32].astype(np.float64), o[rgl.DISTANCE_F32].astype(np.float64), o[rgl.RAY_IDX_U32]
         eid = o[rgl.ENTITY_ID_I32]
         inten, keep = lidar_intensity_and_drop(o[rgl.LASER_RETRO_F32], o[rgl.INCIDENT_ANGLE_F32], d,
-                                               self.cfg['range_at_10pct'], self.rng, self.env, eid)
+                                               self.cfg['range_at_10pct'], self.rng, self.env, eid,
+                                               self.cfg.get('intensity_model'))
+        if self.cfg.get('intensity_model') == 'hesai_v1':          # 실기처럼 채널(레이저)마다 밝기 이득이 조금씩 다름
+            if not hasattr(self, 'ring_gain'):
+                self.ring_gain = np.exp(self.rng.normal(0, 0.08, self.n_lasers))
+            inten = inten * self.ring_gain[idx % self.n_lasers]
+            if not hasattr(self, 'paint_gain'):                        # 도로마다 도색 상태가 다름 (오래된 ~ 새 도색)
+                self.paint_gain = float(np.exp(self.rng.normal(0.15, 0.3)))
+            lane = np.isin(eid // ID_SCALE, [CLASS['lane_white'], CLASS['lane_yellow']])
+            inten = np.clip(np.where(lane, inten * self.paint_gain, inten), 0, 255)
         dn = d + self.rng.normal(0, self.cfg['range_noise_std'], len(d))
         xyz = xyz * (dn / np.maximum(d, 1e-6))[:, None]
         keep &= dn > self.cfg['min_range']

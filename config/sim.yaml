@@ -46,13 +46,27 @@ traffic:
   notice_min: 60.0        # 비콘 인지 거리 [m]
   notice_max: 250.0
   max_vehicles: 200       # 슬롯 상한 (3~4차로·긴 맵이면 부족할 수 있음)
-  p_scc: 0.4              # SCC 작동 차량 비율. 정지한 비콘은 무시, 교통 흐름 방향으로 움직이면 앞차로 인식
-  scc_gap_min: 1.0        # 차간 시간 [s]
-  scc_gap_max: 2.5
-  scc_decel_min: 2.5      # SCC 최대 감속도 [m/s²]
-  scc_decel_max: 5.0
-  scc_range: 150.0
-  scc_moving_min: 0.5     # 비콘을 이동 물체로 인식하는 최소 속도 [m/s]
+  # SCC (적응형 순항): 차마다 아래 범위에서 무작위 (상용 범위: ISO 15622 자동 감속 ≤ 3.5 m/s², 차간 단계 1.0~2.2 s,
+  #   전방 레이더 150~250 m, 정지 물체는 무시하거나 저속에서만 반응)
+  p_scc: 0.4              # SCC 작동 차량 비율
+  scc_gap_min: 1.0        # 차간 시간 단계 {1.0, 1.4, 1.8, 2.2} s 중 이 범위
+  scc_gap_max: 2.2
+  scc_decel_min: 2.5      # 최대 감속도 [m/s²] (대부분)
+  scc_decel_max: 3.5
+  p_scc_strong: 0.2       # 이 비율은 scc_decel_max ~ scc_decel_strong 로 더 세게 감속
+  scc_decel_strong: 5.0
+  scc_range_min: 150.0    # 레이더 앞차 인식 거리 [m]
+  scc_range: 250.0
+  scc_beacon_min: 0.45    # 비콘 인식 거리 배율 (반사 면적이 작음)
+  scc_beacon_max: 0.7
+  p_scc_static_ignore: 0.4     # 정지 물체를 무시하는 차 비율
+  scc_static_vmax_min: 30.0    # 나머지는 자기 속도가 이 범위 [km/h] 이하일 때만 정지 물체에 반응
+  scc_static_vmax_max: 70.0
+  scc_acq_min: 0.3        # 새 대상 인식 지연 [s]
+  scc_acq_max: 1.5
+  scc_lat_min: 1.4        # 진행 경로 폭의 절반 [m] — 비콘이 차선 쪽으로 붙으면 옆 차로 차가 오탐
+  scc_lat_max: 2.1
+  scc_moving_min: 0.5     # 비콘을 이동 물체로 보는 최소 속도 [m/s]
 
 # 실환경 (environment.EnvParams): random 이면 실행마다 랜덤, 지정도 가능
 environment:
@@ -93,8 +107,8 @@ ground_truth:             # 정답 (base_link 기준, 비콘 주변만)
   objects_range: 200.0      # 비콘에서 이 거리 안의 차량만 [m]
   lanes_topic: /ground_truth/lanes            # PointCloud2 — 차선 3D 중심선 점 (x,y,z,line_id,kind,side,painted,wear)
   lanes_rate_hz: 10.0
-  lanes_behind: 30.0        # 비콘 뒤(-s) 범위 [m]
-  lanes_ahead: 100.0        # 비콘 앞(+s) 범위 [m]
+  lanes_behind: 30.0        # 비콘 뒤 범위 [m] (비콘이 바라보는 방향 기준)
+  lanes_ahead: 100.0        # 비콘 앞 범위 [m] (비콘이 바라보는 방향 기준)
   lanes_step: 1.0           # 점 간격 [m]
   markers: true             # RViz 용 MarkerArray (<토픽>/markers)
 drive:                    # 좌우 모터 차동(스키드 스티어) 모델 — (임시) 값은 실기 사양으로 고칠 것
@@ -164,6 +178,7 @@ pandar40p:
   range_at_10pct: 200.0
   range_noise_std: 0.02
   azimuth_resolution_deg: 0.2
+  intensity_model: hesai_v1   # 실기 bag 측정에 맞춘 클래스별 밝기 (노면·도색·배리어). 빼면 예전 단순 모델
 
 tele15:
   enabled: true

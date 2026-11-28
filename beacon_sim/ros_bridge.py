@@ -345,7 +345,12 @@ class RosBridge:
         g = self.gt
         if self._lane_gt[0] is not e.model:
             self._lane_gt = (e.model, LaneGT(e.model, float(g.get('lanes_step', 1.0))))
-        a = self._lane_gt[1].window(e.s_b, float(g.get('lanes_behind', 30.0)), float(g.get('lanes_ahead', 100.0)), T_wb)
+        behind, ahead = float(g.get('lanes_behind', 30.0)), float(g.get('lanes_ahead', 100.0))
+        # 앞·뒤는 비콘이 바라보는 방향 기준 (도로 진행 방향 +s 의 반대를 보고 서 있으면 뒤바꿈)
+        d = np.asarray(e.model.point(e.s_b + 1.0, 0.0), float) - np.asarray(e.model.point(e.s_b, 0.0), float)
+        if float(np.dot(T_wb[:3, 0], d[:3] if d.shape[-1] >= 3 else np.r_[d, 0.0])) < 0:
+            behind, ahead = ahead, behind
+        a = self._lane_gt[1].window(e.s_b, behind, ahead, T_wb)
         self.pub['gt_lanes'].publish(to_pc2(a, self.base_frame, stamp))
         if 'gt_lanes_mk' in self.pub:
             hdr = Header(frame_id=self.base_frame, stamp=stamp)

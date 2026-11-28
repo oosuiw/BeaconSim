@@ -20,6 +20,7 @@ GENERATOR_VERSION = '0.2.0'      # 0.2: 차선 상태(희미/끊김/희소) 구�
 
 # 설계속도별 기준 (도로의 구조·시설 기준에 관한 규칙 참고값)
 DESIGN = {
+    80: dict(r_min=280.0, l_clothoid_min=70.0, grade_max=0.04),
     100: dict(r_min=460.0, l_clothoid_min=85.0, grade_max=0.03),
     120: dict(r_min=710.0, l_clothoid_min=100.0, grade_max=0.03),
 }
@@ -30,7 +31,8 @@ class RoadParams:
     seed: int = 1
     length: float = 3000.0           # 본선 길이 [m]
     lanes: int = 2                   # 방향별 차로 수
-    design_speed: int = 100          # km/h (100 | 120)
+    design_speed: int = 100          # km/h (80 | 100 | 120)
+    grade_max: float = 0.0           # 최대 종단 경사 (0 = 설계속도 기준값: 80 → 4%, 100·120 → 3%). 산악 구간은 5~6%
     tunnels: int = 1                 # 최대 터널 수 (실제 개수는 시드와 공간에 따라)
     tunnel_len_min: float = 200.0
     tunnel_len_max: float = 700.0
@@ -42,6 +44,8 @@ class RoadParams:
     lane_width: float = 3.6
     inner_shoulder: float = 1.0
     outer_shoulder: float = 3.0
+    roadside_clutter: float = 0.0    # 도로 밖 수풀·덤불 밀도 0~1 (라이다 잡물. 0 = 매끈한 지형만)
+    outer_rail: str = 'guardrail'    # 바깥 방호시설: guardrail(W빔) | concrete(콘크리트 방호벽) | mixed(구간마다 섞임)
     barrier_half: float = 0.3
     line_width: float = 0.15
     dash_len: float = 10.0           # 백색 점선 도색 길이
@@ -246,7 +250,9 @@ def _smooth(a, n):
 def generate(params: RoadParams, ds=1.0) -> RoadModel:
     p = params
     rng = np.random.default_rng(p.seed)
-    dz = DESIGN[p.design_speed]
+    dz = dict(DESIGN[p.design_speed])
+    if p.grade_max > 0:
+        dz['grade_max'] = float(p.grade_max)
     V = float(p.design_speed)
 
     # ---- 평면선형: 직선 → (완화곡선 → 원곡선 → 완화곡선) → 직선 ...

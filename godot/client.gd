@@ -801,6 +801,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 				_on_action("light_warning")
 			KEY_K:
 				_on_action("light_search")
+			KEY_N:
+				_on_action("spawn")
 			KEY_F1:
 				help_layer.visible = true
 
@@ -1167,7 +1169,7 @@ func _build_help() -> void:
 	for it in [["↑ / ↓", "비콘 전진 / 후진 (ROS /cmd_vel이 오면 그쪽 우선)"], ["← / →", "비콘 회전"],
 			["좌클릭 드래그", "시점 회전"], ["우클릭 드래그", "시점 이동 (따라가기 해제)"], ["휠", "확대 / 축소"],
 			["F", "비콘 따라가기"], ["1  2  3", "비콘 / 전체 / 터널 시점"], ["Space", "일시정지 / 재생"],
-			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["U", "센서타워 펴기 / 접기"], ["L", "경광등 켜기 / 끄기"], ["K", "서치라이트 켜기 / 끄기"], ["F1", "도움말"]]:
+			["R", "시나리오 재시작"], ["G", "맵 재생성"], ["U", "센서타워 펴기 / 접기"], ["L", "경광등 켜기 / 끄기"], ["K", "서치라이트 켜기 / 끄기"], ["N", "수동 스폰 (개발 모드, 교통 탭 설정)"], ["F1", "도움말"]]:
 		var c := K.chip(it[0], K.ACCENT)
 		c.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		c.custom_minimum_size = Vector2(130, 0)
