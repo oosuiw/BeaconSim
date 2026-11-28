@@ -102,6 +102,9 @@ def rand_cfg(base, rng, seed):
              inner_shoulder=float(rng.uniform(0.5, 1.5)), outer_shoulder=float(rng.uniform(0.5, 3.6)),
              outer_rail=str(rng.choice(['guardrail', 'concrete', 'mixed'], p=[0.35, 0.3, 0.35])),
              roadside_clutter=float(rng.choice([0.0, rng.uniform(0.2, 1.0)], p=[0.25, 0.75])),
+             gutter_w=float(rng.choice([0.0, rng.uniform(0.3, 0.9)], p=[0.3, 0.7])),          # 측구 (실기: 밝은 콘크리트 띠)
+             gutter_med_w=float(rng.choice([0.0, rng.uniform(0.2, 0.6)], p=[0.6, 0.4])),
+             curb_h=float(rng.choice([0.0, rng.uniform(0.08, 0.2)], p=[0.5, 0.5])),
              line_width=float(rng.uniform(0.12, 0.2)), dash_len=float(rng.choice([8.0, 10.0])),
              dash_gap=float(rng.choice([8.0, 10.0, 12.0])))
     w = str(rng.choice(['clear', 'rain', 'fog', 'snow'], p=[0.55, 0.2, 0.15, 0.1]))

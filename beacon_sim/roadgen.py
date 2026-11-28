@@ -46,6 +46,9 @@ class RoadParams:
     outer_shoulder: float = 3.0
     roadside_clutter: float = 0.0    # 도로 밖 수풀·덤불 밀도 0~1 (라이다 잡물. 0 = 매끈한 지형만)
     outer_rail: str = 'guardrail'    # 바깥 방호시설: guardrail(W빔) | concrete(콘크리트 방호벽) | mixed(구간마다 섞임)
+    gutter_w: float = 0.0            # 바깥 측구(콘크리트 L형, 방호시설 앞 노면 높이의 밝은 띠) 폭 [m], 0 = 없음
+    gutter_med_w: float = 0.0        # 중앙분리대 쪽 측구 폭 [m]
+    curb_h: float = 0.0              # 가드레일 구간 측구 바깥 연석 높이 [m], 0 = 없음
     barrier_half: float = 0.3
     line_width: float = 0.15
     dash_len: float = 10.0           # 백색 점선 도색 길이

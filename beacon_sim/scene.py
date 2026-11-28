@@ -228,6 +228,9 @@ def build_static(m: RoadModel):
     parts.append(mb.build('guardrail', 'guardrail'))
     if mbc.v:
         parts.append(mbc.build('barrier', 'barrier'))
+    g = _gutter(m)
+    if g is not None:
+        parts.append(g)
 
     # 조명주 (양쪽 50m 간격, 터널 밖)
     mb = MeshBuilder(m)
@@ -364,6 +367,35 @@ def _mountain(m: RoadModel, s):
         k = np.minimum(np.clip((s - (a - ramp)) / ramp, 0, 1), np.clip(((b + ramp) - s) / ramp, 0, 1))
         H = np.maximum(H, TUNNEL_COVER * k * k * (3 - 2 * k))
     return H
+
+
+def _gutter(m: RoadModel):
+    """측구: 방호시설 앞 노면 위 콘크리트 띠 (L형 측구, 방호벽 쪽으로 살짝 올라감) + 가드레일 구간 연석.
+    실기 라이다에서 노면 높이의 밝은 띠(아스팔트 5~8 → 11~17)로 찍혀 차선과 헷갈리는 것을 재현.
+    라벨은 콘크리트 구조물이라 'barrier' (밝기 모델도 방호벽과 같음)."""
+    p, L, tun = m.params, m.length, m.tunnels
+    wo = min(float(getattr(p, 'gutter_w', 0.0)), p.outer_shoulder + 0.25 - 0.3)       # 바깥 차선(실선)과 겹치지 않게
+    wm = min(float(getattr(p, 'gutter_med_w', 0.0)), p.inner_shoulder - 0.25)
+    ch = float(getattr(p, 'curb_h', 0.0))
+    if wo <= 0.05 and wm <= 0.05:
+        return None
+    mb = MeshBuilder(m)
+    open_iv = _open_intervals(0, L, [(x0 - 5, x1 + 5) for x0, x1 in tun])
+    for side in (-1, 1):
+        if wo > 0.05:
+            t1 = m.edge_t + 0.25                                   # 콘크리트 방호벽 아랫면 = 가드레일 지주 앞
+            for a, b in open_iv:
+                for a2, b2, kind in _rail_segments(p, side, a, b):
+                    prof = [(side * (t1 - wo), 0.004), (side * (t1 - 0.3 * wo), 0.006), (side * t1, 0.03)]
+                    if kind != 'concrete' and ch > 0.02:               # 가드레일 구간: 측구 바깥 연석
+                        prof += [(side * t1, ch), (side * (t1 + 0.15), ch), (side * (t1 + 0.15), 0.0)]
+                    mb.sweep(a2, b2, prof, flip=side < 0)     # 노면과 같은 방향 (t 증가 = 위쪽 면)
+        if wm > 0.05:
+            t0 = p.barrier_half
+            for a, b in _open_intervals(0, L, tun):
+                mb.sweep(a, b, [(side * (t0 + wm), 0.004), (side * (t0 + 0.3 * wm), 0.006), (side * t0, 0.03)],
+                         flip=side > 0)
+    return mb.build('gutter', 'barrier')
 
 
 def _clutter(m: RoadModel):
