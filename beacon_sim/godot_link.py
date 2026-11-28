@@ -164,18 +164,24 @@ def export_scene(eng, out_dir, cam_cfg, Wr, Hr, fy, static_path=None, static_id=
     if write_static:
         g = Glb()
         roots = []
-        # 정적 장면: 클래스별 합치기
+        # 정적 장면: (클래스, 색)별 합치기 — 도색 밝기 편차·보수 패치처럼 같은 클래스라도 색이 다른 파트를 살림.
+        #   노드 이름 static_<클래스>[__<번호>] (Godot 쪽은 '__' 앞을 클래스로 읽음)
         by_cls = {}
         for p in eng.parts:
-            by_cls.setdefault(p.cls, []).append(p)
-        for cls, ps in by_cls.items():
+            key = (p.cls, tuple(round(float(c), 3) for c in (p.color or (0.5, 0.5, 0.5))))
+            by_cls.setdefault(key, []).append(p)
+        seen = {}
+        for (cls, _), ps in by_cls.items():
             vs, fs, n0 = [], [], 0
             for p in ps:
                 vs.append(to_g(p.v, origin))
                 fs.append(p.f + n0)
                 n0 += len(p.v)
-            mi = g.mesh(cls, np.concatenate(vs), np.concatenate(fs), cls, ps[0].color, smooth=cls in SMOOTH)
-            roots.append(g.node(f'static_{cls}', mi))
+            k = seen.get(cls, 0)
+            seen[cls] = k + 1
+            nm = cls if k == 0 else f'{cls}__{k}'
+            mi = g.mesh(nm, np.concatenate(vs), np.concatenate(fs), nm, ps[0].color, smooth=cls in SMOOTH)
+            roots.append(g.node(f'static_{nm}', mi))
         # 비콘 부품: 링크별 노드 (robot / link_mast / link_crank ...), 상태 메시지의 링크 변환으로 접히고 펴진다
         from .robot_model import load_robot_links
         parts, _, meta = load_robot_links()

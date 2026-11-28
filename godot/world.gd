@@ -231,7 +231,7 @@ func _mat(cls: String, base: Color, wet: float) -> StandardMaterial3D:
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED     # 원본 메시의 면 방향이 섞여 있음
 	match cls:
 		"road":
-			m.albedo_color = Color(0.24, 0.24, 0.24) * (1.0 - 0.35 * wet)
+			m.albedo_color = Color(base.r * 1.09, base.g * 1.09, base.b * 1.05) * (1.0 - 0.35 * wet)   # 보수 패치는 색이 다름
 			m.albedo_texture = _noise_tex(0.08, false, Color(0.55, 0.55, 0.56), Color(1.15, 1.15, 1.15), 3)
 			m.normal_enabled = true
 			m.normal_texture = _noise_tex(0.25, true, Color.BLACK, Color.WHITE, 4)
@@ -279,7 +279,7 @@ func _load_static(path: String) -> void:
 	for n in root.get_children():
 		var nm := String(n.name)
 		if nm.begins_with("static_") and n is MeshInstance3D:
-			var cls := nm.trim_prefix("static_")
+			var cls := nm.trim_prefix("static_").get_slice("__", 0)     # 같은 클래스·다른 색 파트: static_<클래스>__<번호>
 			var mi := n as MeshInstance3D
 			var base := Color(0.5, 0.5, 0.5)
 			var sm := mi.mesh.surface_get_material(0)

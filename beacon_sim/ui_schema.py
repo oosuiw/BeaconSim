@@ -78,6 +78,15 @@ def tabs(be, mode=None, start=False):
                 _f('map.dash_gap', '점선 빈칸', 3, 20, '%.1f m', 0.5),
                 _f('map.region_lat', '지역 위도', 33, 39, '%.4f', 0.0001),
                 _f('map.region_lon', '지역 경도', 124, 132, '%.4f', 0.0001)])]),
+        _card('선형 · 지형', 'map', [
+            _f('map.curviness', '굽은 정도', 0, 1, tip='높을수록 작은 반경 곡선이 자주, 직선이 짧게, S자 연속'),
+            _f('map.r_min', '최소 곡선반경 (0 = 설계속도 기준)', 0, 1000, '%.0f m', 10, tip='IC·산악 구간 150~250 m'),
+            _f('map.hilliness', '기복', 0, 1, tip='종단 경사가 자주·크게 바뀜 + 도로 양옆 언덕(절토)·골짜기(깊은 성토)')]),
+        _card('노면', 'grip', [
+            _f('map.roughness', '노면 굴곡', 0, 1, tip='ISO 8608 노면 거칠기. 0.5 ≈ A급(고속도로 대표), 1 = B급 상한 (높이 RMS 약 4 / 9 mm)'),
+            _f('map.rut_depth', '바퀴 자국 깊이', 0, 0.03, '%.3f m', 0.001, tip='소성변형: 바깥 차로 기준, 안쪽 차로는 0.6배'),
+            _f('map.patches', '보수 패치', 0, 1, tip='사각형 덧씌움: 높이 ±1 cm, 색·라이다 밝기가 주변과 다름'),
+            dict(t='note', text='굴곡·패치가 있으면 노면 메시가 촘촘해져 맵 생성이 몇 초 더 걸림')]),
         _card('도로변', 'road', [
             dict(t='choice', k='map.outer_rail', label='바깥 방호시설',
                  opts=[['guardrail', 'W빔 가드레일'], ['concrete', '콘크리트 방호벽'], ['mixed', '구간마다 섞임']]),

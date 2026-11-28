@@ -196,8 +196,14 @@ def build_static(m: RoadModel):
     # 노면: 중앙분리대 아래 평탄 + 양쪽 횡단경사
     mb = MeshBuilder(m)
     pv = m.paved_t
-    mb.sweep(0, L, [(-pv, 0), (-p.barrier_half, 0), (p.barrier_half, 0), (pv, 0)])
+    if m.rough is not None:                   # 노면 굴곡: 촘촘한 격자 (0.5 m × 0.2 m)
+        sg = np.r_[np.arange(0.0, L, 0.5), L]
+        tg = np.r_[np.arange(-pv, pv, 0.2), pv]
+        mb.grid(sg, tg[None, :], 0.0)
+    else:
+        mb.sweep(0, L, [(-pv, 0), (-p.barrier_half, 0), (p.barrier_half, 0), (pv, 0)])
     parts.append(mb.build('road', 'road'))
+    parts += _road_patches(m)
 
     # 차선 도색: 구간별 상태 (양호 / 희미함 / 끊김 / 희소). 결정적 난수
     parts += _paint(m)
@@ -289,6 +295,7 @@ def _paint(m: RoadModel):
     asphalt = np.array(COLOR['road'])
     builders = {}                              # (cls, 밝기 배율 g) → MeshBuilder
     var = float(getattr(p, 'paint_var', 0.0))
+    pds = 0.5 if m.rough is not None else 2.5       # 노면 굴곡이 있으면 도색도 촘촘히 (노면 아래로 묻히지 않게)
     vrng = np.random.default_rng(p.seed * 7 + 131)  # 밝기 편차 전용 (기존 마모 난수 순서는 그대로)
 
     def line_gain_fn():
@@ -365,13 +372,13 @@ def _paint(m: RoadModel):
                         if b - a <= 0.05:
                             continue
                         if lf is None:
-                            mb_for(cls, 1 - fade).sweep(a, b, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=2.5)
+                            mb_for(cls, 1 - fade).sweep(a, b, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=pds)
                             continue
                         n = max(1, int(np.ceil((b - a) / 5.0)))             # 5 m 토막마다 선 밝기 편차를 겹침
                         edges = np.linspace(a, b, n + 1)
                         for c0, c1 in zip(edges[:-1], edges[1:]):
                             g = (1 - fade) * lf((c0 + c1) / 2)
-                            mb_for(cls, max(g, 0.03)).sweep(c0, c1, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=2.5)
+                            mb_for(cls, max(g, 0.03)).sweep(c0, c1, [(t - hw, PAINT_Z), (t + hw, PAINT_Z)], ds=pds)
     out = []
     for (cls, g), mb in sorted(builders.items()):
         base = np.array(COLOR[cls])
@@ -424,6 +431,41 @@ def _gutter(m: RoadModel):
     return mb.build('gutter', 'barrier')
 
 
+def _road_patches(m: RoadModel):
+    """보수 패치: 노면 위 얇은 덧씌움 (높이는 노면 굴곡 격자에 이미 들어감). 밝기·색 배율별 파트 (라벨은 노면)"""
+    if not m.patches:
+        return []
+    groups = {}
+    for s0, s1, t0, t1, dh, gain, col in m.patches:
+        key = (round(gain, 1), round(col, 1))
+        mb = groups.setdefault(key, MeshBuilder(m))
+        sg = np.r_[np.arange(s0, s1, 0.5), s1]
+        mb.grid(sg, np.linspace(t0, t1, max(2, int((t1 - t0) / 0.2) + 1))[None, :], 0.0015)
+    out = []
+    for (gain, col), mb in sorted(groups.items()):
+        c = tuple(float(np.clip(x * col, 0, 1)) for x in COLOR['road'])
+        out.append(mb.build(f'road_patch_{int(gain * 10)}_{int(col * 10)}', 'road', color=c, retro=RETRO['road'] * gain))
+    return out
+
+
+def _side_ground(m: RoadModel, s, side, d):
+    """포장 끝에서 바깥으로 d [m] 지점의 지면 높이 (포장 끝 노면 기준).
+    성토 1:2 사면(기본 1.5 m 아래, 골짜기면 더 깊게) 과 절토 사면(터널 산·언덕, 1:1.5) 중 높은 쪽"""
+    s = np.asarray(s, float)
+    d = np.asarray(d, float)
+    hill = _mountain(m, s)
+    fill = np.full(np.shape(s), 1.5)
+    if m.relief is not None:
+        r = np.interp(s, m.s, m.relief[:, 0 if side < 0 else 1])
+        hill = np.maximum(hill, np.maximum(r, 0.0))
+        fill = fill + np.maximum(-r, 0.0)
+    if np.ndim(d) > np.ndim(s):
+        hill, fill = hill[..., None], fill[..., None]
+    base = -np.minimum(0.5 * d, fill)
+    cut = np.clip(d / np.maximum(1.5 * hill, 1e-3), 0, 1)
+    return np.maximum(base, hill * cut)
+
+
 def _clutter(m: RoadModel):
     """도로 밖 수풀·덤불 (지형 클래스 상자): 포장 끝 바깥 0.3~9 m, 성토 사면 높이를 따라. 밀도 = roadside_clutter"""
     p = m.params
@@ -439,13 +481,12 @@ def _clutter(m: RoadModel):
             s += float(rng.exponential(6.0 / dens))
             if m.in_tunnel(s, margin=5) or s >= m.length - 2.0:
                 continue
-            Hm = float(_mountain(m, np.array([s]))[0])
             for _ in range(int(rng.integers(1, 4))):                  # 덤불 무리 (포장 끝 가까이 많이)
                 d = 0.3 + float(rng.exponential(1.8))
                 if d > 9.0:
                     continue
                 # 지형 모델(_terrain)과 같은 높이: 성토 1:2 사면(최대 1.5 m 아래)과 절토 사면 중 높은 쪽, 포장 끝 높이 기준
-                ground = max(-min(0.5 * d, 1.5), Hm * float(np.clip(d / max(Hm, 1e-3), 0, 1)))
+                ground = float(_side_ground(m, s, side, d))
                 ground += float(m.surface_z(s, side * pv) - m.surface_z(s, side * (pv + d)))
                 h = float(rng.choice([rng.uniform(0.1, 0.4), rng.uniform(0.4, 1.6)], p=[0.6, 0.4]))
                 L, W = float(rng.uniform(0.3, 2.5)), float(rng.uniform(0.3, 1.5))
@@ -458,14 +499,11 @@ def _terrain(m: RoadModel):
     ts = np.array([pv, pv + 1, pv + 2, pv + 4, pv + 7, pv + 11, pv + 16, pv + 24, pv + 35, pv + 50, TERRAIN_W])
     s = np.arange(0, m.length, 5.0)
     s = np.r_[s, m.length]
-    Hm = _mountain(m, s)[:, None]
     mb = MeshBuilder(m)
     for side in (-1, 1):
         t = side * ts[None, :]
-        d = ts[None, :] - pv
-        base = -np.minimum(0.5 * d, 1.5)                       # 1:2 성토 사면, 1.5m 아래 평지
-        cut = np.clip(d / np.maximum(Hm, 1e-3), 0, 1)          # 1:1 절토 사면으로 산까지
-        h = np.maximum(base, Hm * cut)
+        d = np.broadcast_to(ts[None, :] - pv, (len(s), len(ts)))
+        h = _side_ground(m, s, side, d)                        # 성토 사면 / 절토 사면 (터널 산·언덕)
         # h는 '포장 끝 노면 높이' 기준 → point()가 쓰는 해당 t의 노면 높이 기준으로 환산
         h = h + m.surface_z(s[:, None], side * pv) - m.surface_z(s[:, None], t)
         mb.grid(s, t, h, flip=(side > 0))

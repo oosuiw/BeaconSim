@@ -51,6 +51,14 @@ class RoadParams:
     gutter_w: float = 0.0            # 바깥 측구(콘크리트 L형, 방호시설 앞 노면 높이의 밝은 띠) 폭 [m], 0 = 없음
     gutter_med_w: float = 0.0        # 중앙분리대 쪽 측구 폭 [m]
     curb_h: float = 0.0              # 가드레일 구간 측구 바깥 연석 높이 [m], 0 = 없음
+    # 선형·지형 (0 = 기존 생성과 같음)
+    r_min: float = 0.0               # 최소 곡선반경 [m] (0 = 설계속도 기준: 80 → 280, 100 → 460, 120 → 710). IC·산악 구간은 150~250
+    curviness: float = 0.0           # 굽은 정도 0~1: 작은 반경이 자주, 직선이 짧게, 누적 방위 변화 범위가 넓게
+    hilliness: float = 0.0           # 기복 0~1: 종단 경사가 자주·크게 바뀜 (최대 경사 +2.5%p), 도로 양옆 지형이 언덕(절토)·골짜기(깊은 성토)
+    # 노면 (0 = 매끈한 평면)
+    roughness: float = 0.0           # 노면 굴곡 0~1: ISO 8608 변위 PSD Gd(0.1 c/m) = 4·32^값 ×1e-6 m³ (0.5 ≈ A급 = 고속도로 대표, 1 = B급 상한)
+    rut_depth: float = 0.0           # 바퀴 자국 소성변형 깊이 [m] (바깥 차로 기준, 안쪽 차로는 0.6배. 국내 보수 기준 근처 0.01~0.02)
+    patches: float = 0.0             # 보수 패치 밀도 0~1 (사각형 덧씌움: 높이 ±1 cm, 색·라이다 밝기가 주변과 다름)
     barrier_half: float = 0.3
     line_width: float = 0.15
     dash_len: float = 10.0           # 백색 점선 도색 길이
@@ -90,6 +98,9 @@ class RoadModel:
     utm_zone: int = 52
     grid_origin_utm: tuple = (0.0, 0.0)             # 격자 원점 (UTM E, N)
     segments: list = field(default_factory=list)    # 선형 구성 요약
+    relief: object = None   # (N, 2) 도로 양옆 지형 기복 [m] (+ 언덕/절토, - 골짜기/깊은 성토) [하행, 상행]
+    rough: object = None    # 노면 굴곡 격자 (s0, ds, t0, dt, H (ns, nt) float32)
+    patches: list = field(default_factory=list)     # [(s0, s1, t0, t1, dh, 밝기 배율, 색 배율)]
 
     # ---------------- 횡단 구성
     @property
@@ -142,13 +153,28 @@ class RoadModel:
         return self._interp(s, self.x), self._interp(s, self.y), self._interp(s, self.z), th
 
     def surface_z(self, s, t):
-        """노면 높이 (편경사/횡단경사 포함). 중앙분리대 구간은 중심선 높이."""
+        """노면 높이 (편경사/횡단경사 + 노면 굴곡·바퀴 자국·패치 포함). 중앙분리대 구간은 중심선 높이."""
         s, t = np.broadcast_arrays(np.asarray(s, float), np.asarray(t, float))
         zc = self._interp(s, self.z)
         sl_dn = self._interp(s, self.cross_slope[:, 0])
         sl_up = self._interp(s, self.cross_slope[:, 1])
         d = np.maximum(np.abs(t) - self.params.barrier_half, 0.0)
-        return zc + np.where(t < 0, sl_dn, sl_up) * d
+        z = zc + np.where(t < 0, sl_dn, sl_up) * d
+        if self.rough is not None:
+            z = z + self.rough_dz(s, t)
+        return z
+
+    def rough_dz(self, s, t):
+        """노면 굴곡 높이 [m] (격자 쌍선형 보간, 포장 밖 0)"""
+        s0, ds, t0, dt, H = self.rough
+        fs = np.clip((np.asarray(s, float) - s0) / ds, 0, H.shape[0] - 1.001)
+        ft = (np.asarray(t, float) - t0) / dt
+        inside = (ft >= 0) & (ft <= H.shape[1] - 1)
+        ft = np.clip(ft, 0, H.shape[1] - 1.001)
+        i, j = fs.astype(int), ft.astype(int)
+        a, b = fs - i, ft - j
+        v = (H[i, j] * (1 - a) * (1 - b) + H[i + 1, j] * a * (1 - b) + H[i, j + 1] * (1 - a) * b + H[i + 1, j + 1] * a * b)
+        return np.where(inside, v, 0.0)
 
     def point(self, s, t, h=0.0):
         """(s, t) 노면 위 h 높이의 map 좌표. 배열 브로드캐스트."""
@@ -258,6 +284,13 @@ def generate(params: RoadParams, ds=1.0) -> RoadModel:
     dz = dict(DESIGN[p.design_speed])
     if p.grade_max > 0:
         dz['grade_max'] = float(p.grade_max)
+    elif p.hilliness > 0:
+        dz['grade_max'] = dz['grade_max'] + 0.025 * float(np.clip(p.hilliness, 0, 1))
+    if p.r_min > 0:
+        dz['r_min'] = float(p.r_min)
+    cv = float(np.clip(p.curviness, 0.0, 1.0))
+    hl = float(np.clip(p.hilliness, 0.0, 1.0))
+    r_hi = float(np.exp((1 - cv) * np.log(4000.0) + cv * np.log(max(2.0 * dz['r_min'], dz['r_min'] + 100.0))))
     V = float(p.design_speed)
 
     # ---- 평면선형: 직선 → (완화곡선 → 원곡선 → 완화곡선) → 직선 ...
@@ -268,18 +301,19 @@ def generate(params: RoadParams, ds=1.0) -> RoadModel:
     total += first
     heading_budget = 0.0
     while total < p.length + 200:
-        R = float(np.exp(rng.uniform(np.log(dz['r_min']), np.log(4000.0))))
+        R = float(np.exp(rng.uniform(np.log(dz['r_min']), np.log(r_hi))))
         Lc = float(np.clip(rng.uniform(R / 9, R / 4), dz['l_clothoid_min'], 250.0))
         La = float(rng.uniform(80, 500))
         # 누적 방위 변화를 ±60° 안으로 유지하도록 곡선 방향 선택
         sweep = (La + Lc) / R
+        lim = np.radians(60 + 60 * cv)
         sign = -np.sign(heading_budget) if abs(heading_budget) > np.radians(20) else rng.choice([-1.0, 1.0])
-        if abs(heading_budget + sign * sweep) > np.radians(60):
+        if abs(heading_budget + sign * sweep) > lim:
             sign = -sign
         k = sign / R
         segs += [('clothoid', Lc, 0.0, k), ('arc', La, k, k), ('clothoid', Lc, k, 0.0)]
         heading_budget += sign * sweep
-        Ls = float(rng.uniform(150, 700))
+        Ls = float(rng.uniform(150, 700)) * (1 - 0.75 * cv)
         segs.append(('straight', Ls, 0.0, 0.0))
         total += 2 * Lc + La + Ls
     kappa = []
@@ -300,12 +334,12 @@ def generate(params: RoadParams, ds=1.0) -> RoadModel:
     pos = 0.0
     g = 0.0
     while pos < s[-1]:
-        L = rng.uniform(400, 1200)
-        g = float(np.clip(g + rng.normal(0, 0.015), -dz['grade_max'], dz['grade_max']))
+        L = rng.uniform(400, 1200) * (1 - 0.6 * hl)
+        g = float(np.clip(g + rng.normal(0, 0.015 * (1 + 2 * hl)), -dz['grade_max'], dz['grade_max']))
         grade[(s >= pos) & (s < pos + L)] = g
         pos += L
     grade[s < 150] = 0.0                                      # 시작부 평탄
-    grade = _smooth(grade, int(150 / ds))
+    grade = _smooth(grade, int(150 * (1 - 0.4 * hl) / ds))
     z = p.start_elevation + np.r_[0.0, np.cumsum((grade[:-1] + grade[1:]) / 2 * ds)]
 
     # ---- 횡단경사/편경사: 직선부 바깥쪽 2%, 곡선부는 최소반경에서 6% → 반경이 커질수록 감소(최소 2%)
@@ -366,4 +400,67 @@ def generate(params: RoadParams, ds=1.0) -> RoadModel:
                         wear.append((side, ln.key, a, min(a + L, float(s[-1])), k, float(rng.uniform(0.4, 1.0))))
                     a += L
     m.wear = wear
+    _relief_and_surface(m)
     return m
+
+
+def _relief_and_surface(m: RoadModel):
+    """지형 기복(양옆)과 노면 굴곡 격자. 전용 난수라 0 이면 기존 맵과 같음."""
+    p = m.params
+    s = m.s
+    rng = np.random.default_rng(p.seed * 31 + 7)
+    hl = float(np.clip(p.hilliness, 0, 1))
+    if hl > 0:
+        rel = np.zeros((len(s), 2))
+        for j in range(2):
+            for _ in range(4):                     # 파장 80~600 m 기복 4개
+                lam, ph = rng.uniform(80, 600), rng.uniform(0, 2 * np.pi)
+                rel[:, j] += rng.uniform(0.3, 1.0) * np.sin(2 * np.pi * s / lam + ph)
+            rel[:, j] = rel[:, j] / 2.0 * 12.0 * hl + rng.uniform(-2, 4) * hl     # 대략 -12 ~ +16 m
+        m.relief = rel
+    r, rut, pat = float(p.roughness), float(p.rut_depth), float(np.clip(p.patches, 0, 1))
+    if r <= 0 and rut <= 0 and pat <= 0:
+        return
+    pv = m.paved_t
+    ds_, dt_ = 0.25, 0.1
+    sg = np.arange(0.0, s[-1] + ds_, ds_)
+    tg = np.arange(-pv, pv + dt_ / 2, dt_)
+    H = np.zeros((len(sg), len(tg)), np.float32)
+    S, T = np.meshgrid(sg, tg, indexing='ij')
+    if r > 0:                                      # ISO 8608: Gd(n) = Gd(n0)(n/n0)^-2, 파장 1~60 m, 횡방향 상관 (파 방향 ±25°)
+        gd0 = 4e-6 * 32.0 ** float(np.clip(r, 0, 1.5))
+        nb = np.geomspace(1 / 60.0, 1.0, 49)
+        for n0, n1 in zip(nb[:-1], nb[1:]):
+            n = np.sqrt(n0 * n1)
+            amp = np.sqrt(2 * gd0 * (n / 0.1) ** -2 * (n1 - n0))
+            for _ in range(2):
+                th = np.radians(rng.normal(0, 25))
+                kx, ky = 2 * np.pi * n * np.cos(th), 2 * np.pi * n * np.sin(th)
+                H += (amp / np.sqrt(2) * np.sin(kx * S + ky * T + rng.uniform(0, 2 * np.pi))).astype(np.float32)
+    if rut > 0:                                    # 바퀴 자국: 차로 중심 ±0.9 m, 폭(σ) 0.22 m, 깊이가 길이 방향으로 0.5~1배
+        L1 = p.barrier_half + p.inner_shoulder
+        mod = 0.75 + 0.25 * np.sin(2 * np.pi * sg / rng.uniform(40, 150) + rng.uniform(0, 6.3))
+        for side in (-1, 1):
+            for k in range(p.lanes):
+                c = side * (L1 + (k + 0.5) * p.lane_width)
+                f = 1.0 if k == p.lanes - 1 else 0.6
+                for w in (-0.9, 0.9):
+                    H -= (rut * f * mod[:, None] * np.exp(-0.5 * ((T - c - w) / 0.22) ** 2)).astype(np.float32)
+    if pat > 0:                                    # 보수 패치: 길이 1~25 m, 폭 1~차로 폭, 높이 -0.5~+1.2 cm
+        n = int(rng.poisson(pat * 4.0 * s[-1] / 100.0))
+        out = []
+        for _ in range(n):
+            s0 = float(rng.uniform(0, s[-1] - 2)); Lp = float(rng.uniform(1, 25))
+            side = rng.choice([-1, 1]); w = float(rng.uniform(1.0, p.lane_width))
+            tc = side * float(rng.uniform(p.barrier_half + 0.5 + w / 2, m.edge_t - w / 2))
+            dh = float(rng.uniform(-0.005, 0.012))
+            gain = float(np.exp(rng.normal(0, 0.35)))           # 라이다 밝기 (새 아스팔트는 어둡고 오래되면 밝음)
+            col = float(np.clip(np.exp(rng.normal(-0.1, 0.25)), 0.55, 1.5))
+            t0, t1 = tc - w / 2, tc + w / 2
+            out.append((s0, min(s0 + Lp, float(s[-1])), t0, t1, dh, gain, col))
+            m_ = (S >= s0) & (S <= s0 + Lp) & (T >= t0) & (T <= t1)
+            H[m_] += dh
+        m.patches = out
+    taper = np.clip((pv - np.abs(tg)) / 0.5, 0, 1).astype(np.float32)       # 포장 끝에서 0 (지형과 이어짐)
+    H *= taper[None, :]
+    m.rough = (0.0, ds_, float(-pv), dt_, H)

@@ -105,6 +105,10 @@ def rand_cfg(base, rng, seed):
              gutter_w=float(rng.choice([0.0, rng.uniform(0.3, 0.9)], p=[0.3, 0.7])),          # 측구 (실기: 밝은 콘크리트 띠)
              gutter_med_w=float(rng.choice([0.0, rng.uniform(0.2, 0.6)], p=[0.6, 0.4])),
              curb_h=float(rng.choice([0.0, rng.uniform(0.08, 0.2)], p=[0.5, 0.5])),
+             curviness=float(rng.uniform(0.0, 1.0)), hilliness=float(rng.uniform(0.0, 1.0)),
+             r_min=float(rng.choice([0.0, rng.uniform(150.0, 460.0)], p=[0.7, 0.3])),
+             roughness=float(rng.uniform(0.2, 1.0)), rut_depth=float(rng.uniform(0.0, 0.02)),
+             patches=float(rng.uniform(0.0, 0.8)),
              line_width=float(rng.uniform(0.12, 0.2)), dash_len=float(rng.choice([8.0, 10.0])),
              dash_gap=float(rng.choice([8.0, 10.0, 12.0])))
     w = str(rng.choice(['clear', 'rain', 'fog', 'snow'], p=[0.55, 0.2, 0.15, 0.1]))
