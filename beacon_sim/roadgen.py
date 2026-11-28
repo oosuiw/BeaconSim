@@ -43,6 +43,7 @@ class RoadParams:
     wear_sparse: float = 1.0         #   희소(점선 일부만 남음 / 실선이 짧은 토막)
     paint_var: float = 0.0           # 도색 밝기 편차 0~1: 선마다 거의 지워진 선(0.6·값 확률) ~ 새 도색, 선을 따라 수십~백여 m 에
                                      #   걸쳐 서서히 흐려짐 (마모 구간과 겹침). 0 = 모든 선 같은 밝기, 1 ≈ 실기 bag
+    inner_line: str = 'yellow'       # 중앙분리대 쪽 실선 색: yellow(황색) | white(모든 선이 흰색인 도로)
     lane_width: float = 3.6
     inner_shoulder: float = 1.0
     outer_shoulder: float = 3.0
@@ -110,7 +111,7 @@ class RoadModel:
     def lines(self):
         p = self.params
         L1 = p.barrier_half + p.inner_shoulder
-        out = [Line('median_border', p.barrier_half, 'road_border'), Line('yellow', L1, 'yellow_solid')]
+        out = [Line('median_border', p.barrier_half, 'road_border'), Line('yellow', L1, 'white_solid' if p.inner_line == 'white' else 'yellow_solid')]
         for k in range(1, p.lanes):
             out.append(Line(f'div{k}', L1 + k * p.lane_width, 'white_dashed'))
         out.append(Line('edge', L1 + p.lanes * p.lane_width, 'white_solid'))

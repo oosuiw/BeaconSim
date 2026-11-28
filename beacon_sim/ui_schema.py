@@ -69,6 +69,8 @@ def tabs(be, mode=None, start=False):
             _f('map.wear_faded', '희미함', 0, 1),
             _f('map.wear_broken', '끊김', 0, 1),
             _f('map.wear_sparse', '희소', 0, 1),
+            dict(t='seg', k='map.inner_line', label='중앙분리대 쪽 선',
+                 opts=[['yellow', '황색 실선'], ['white', '흰색 실선 (모든 선 흰색)']]),
             _f('map.paint_var', '도색 밝기 편차', 0, 1, tip='선마다 다른 밝기(새 도색/바랜 선) + 선을 따라 서서히 흐려짐'),
             dict(t='group', label='고급', items=[
                 _f('map.tunnel_len_min', '터널 최소', 100, 2000, '%.0f m', 10),

@@ -13,6 +13,7 @@ map:
   wear_faded: 1.0
   wear_broken: 1.0
   wear_sparse: 1.0
+  inner_line: yellow      # 중앙분리대 쪽 실선: yellow | white (모든 선이 흰색인 도로)
   paint_var: 1.0          # 도색 밝기 편차 0~1 (선마다 거의 지워진 선 ~ 새 도색 + 선을 따라 서서히 흐려짐). 1.0 ≈ 실기 bag 측정
   outer_rail: mixed       # 바깥 방호시설: guardrail | concrete | mixed (구간마다)
   gutter_w: 0.5           # 바깥 측구 폭 [m] (방호시설 앞 콘크리트 띠, 0 = 없음)
